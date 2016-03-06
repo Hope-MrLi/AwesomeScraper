@@ -11,6 +11,7 @@ from tkFileDialog import askopenfilename
 from tkMessageBox import *
 import Queue
 import exceptions
+import os
 
 
 # 关于线程设计的一个关键特性就是避免在里面出现任何blocking的等待特性功能，
@@ -18,21 +19,6 @@ import exceptions
 # 这时候就会出现各种bug，例如线程无法接收外部信号量来关闭自己。
 # 如果线程中必须有等待，那么一定要把它做成non-blocking的轮询机制。
 # 例如sleep N秒做成每sleep 1秒查一次是否被关闭，Queue.get也要配成non-blocking，然后每秒去查并立即返回。
-
-# Read from file, return company name as list.
-def read_input_list(filename):
-    company_name = []
-    bom = '%EF%BB%BF'
-    try:
-        f = open(filename, 'r')
-        for line in f:
-            # print line
-            if bom in urllib2.quote(line):
-                line = line[3:]
-            company_name.append(line.decode('utf-8').strip('\n'))
-    finally:
-        f.close()
-    return company_name
 
 
 # Generate UTF-8 encoded url link of the search path.
@@ -48,7 +34,9 @@ def search_link_generator(entrylist):
 
 
 def write_file(info, path='result.txt'):
-    f = open(path, 'a')
+    if not os.path.exists('result'):
+        os.makedirs('result')
+    f = open('result\\' + path, 'a')
     try:
         f.write(info)
     finally:
@@ -89,7 +77,7 @@ def extract_info(page_soup):
         reg_capital = page_soup.find_all('td', class_="td-regCapital-value")
         if len(reg_capital) > 0:
             res = u'注册资本:' + reg_capital[0].p.string
-            result.append(res.strip(',').encode('utf-8'))
+            result.append(res.replace(',', ' ').encode('utf-8'))
         else:
             result.append('reg_capital Null')
     except:
@@ -176,18 +164,21 @@ class InfoScraper(object):
         self.timer_start = 0
         self.timer_stop = 0
         self.duration = ''
-        self.abort = False
-        self.closing = False
-        self.service_denied = False
-        self.service_denied_count = 0
+        self.format_error = False  # Flag indicating format error of user specified file.
+        self.company_list = []  # List read from user specified txt file.
+        self.url_list = []  # URL List generated from company_list.
+        self.abort = False  # Flag for signaling the abort of scraper and monitor thread.
+        self.closing = False  # Flag for signaling the scraper thread is ready for exit.
+        self.service_denied = False  # Flag indicating the current search url is denied by server.
+        self.service_denied_count = 0  # Flag indicating how many times it has been denied.
         self.completed_item = 0
 
     # Waiting for web page to refresh, but keep monitor if user want to abort.
     def wait_refresh(self, interval):
-        for i in range(interval):
+        for i in range(interval*2):
             if self.abort:
                 raise exceptions.RuntimeError
-            time.sleep(1)
+            time.sleep(0.5)
 
     # Since the content tag does not include all require info, we need to parse each field.
     # Parse each required fields separately and combine into one string, write into result.txt.
@@ -248,7 +239,27 @@ class InfoScraper(object):
             write_file(output, self.dst_path)
             q.put(output)
             write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
-        # browser.close()
+
+    # Load the file specified by user. Generate corresponding url.
+    def load_file(self):
+        # Read from file, store each line (company name) into a list.
+        self.format_error = False
+        self.company_list = []
+        bom = '%EF%BB%BF'  # Bom header for UTF-8. Need to take out before generate url.
+        try:
+            f = open(self.src_path, 'r')
+            for line in f:
+                if bom in urllib2.quote(line):
+                    line = line[3:]
+                self.company_list.append(line.decode('utf-8').strip('\n'))
+        # Watch out for decode error. If the input file is not encoded in UTF-8, notify user.
+        except UnicodeDecodeError:
+            self.format_error = True
+        finally:
+            f.close()
+
+        # Compose full url list from source list.
+        self.url_list = search_link_generator(self.company_list)
 
     # Totally 4 scenarios need to be covered.
     # 1. Scraper finished searching all items and exit normally.
@@ -258,14 +269,10 @@ class InfoScraper(object):
     # This will guarantee 'terminate()' to be called in any of the scenarios.
     def start_scraper(self):
         self.timer_start = time.time()
-        # Read item from source list.
-        source_list = read_input_list(self.src_path)
-        # Compose full url list from source list.
-        url_list = search_link_generator(source_list)
-        # Use selenium to launch each url_list.
-        for i in range(len(source_list)):
+
+        for i in range(len(self.url_list)):
             if not self.abort:
-                self.scraper(url_list[i], source_list[i], i)
+                self.scraper(self.url_list[i], self.company_list[i], i)
                 # <Scenario 3>: Service Denied, wait for 5 minute to recover.
                 if self.service_denied:
                     # Keep monitoring the abort signal during the waiting period.
@@ -276,10 +283,6 @@ class InfoScraper(object):
                 # <Scenario 4>: Service Denied too many time, no point to continue, the scraper exit immediately.
                 if self.service_denied_count > 5:
                     break
-            # <Scenario 2>: User abort when executing inside scraper(), need to wait until it finished.
-            if self.abort:
-                self.closing = True  # Detecting current iteration is finished and ready for cleanup.
-                break
 
         self.timer_stop = time.time()
         diff = (self.timer_stop - self.timer_start) / 60
@@ -287,8 +290,7 @@ class InfoScraper(object):
         print 'Total Time = ' + self.duration
 
         # <Scenario 1>: Scraper finished searching all items and exit normally.
-        if not self.closing:
-            self.closing = True
+        if not self.abort:
             self.terminate()
 
     # Terminate the scraper thread by first set running flag to False so that new iteration will not start.
@@ -297,37 +299,45 @@ class InfoScraper(object):
     def terminate(self):
         self.abort = True
         print '<Scraper_Thread> terminate start.'
-        for i in range(1, 20):  # Keep checking if scraper is about to stop the loop.
-            if self.closing:
-                self.browser.close()
-                print '<Scraper_Thread> terminate completed.'
-                break
-            else:
-                time.sleep(0.5)
+        self.browser.close()
+        print '<Scraper_Thread> terminate completed.'
 
 
 class UI(object):
 
     def read_file_location(self):
+        self.current_status.set('Status: Loading...')
+        self.status.config(fg='blue')
         self.source_path = askopenfilename(filetypes=[("Text files", "*.txt")])
         self.file_menu.entryconfig("Step #3: Post Processing", state='disable')
         if len(self.source_path) > 0:
-            self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='normal')
-            self.current_status.set('Status: Source file selected. Ready to Launch. Now let\'s go to <Step #2>!')
-            self.status.config(fg='blue')
+            # Instantiate InfoScraper Class.
+            self.result_path = 'result_' + str(time.strftime('%Y %m %d %H%M', time.localtime(time.time()))) + '.txt'
+            self.myScraper = InfoScraper(self.source_path, self.result_path)
+            self.myScraper.interval = 5
+            self.myScraper.load_file()
+            if self.myScraper.format_error:
+                self.warning()
+                self.current_status.set('Status: Oops... Looks like your file is not encoded in UTF-8, '
+                                        'please SAVE AS UTF-8 and retry.')
+                self.status.config(fg='red')
+            else:
+                self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='normal')
+                self.current_status.set('Status: Source file validated. Ready to Launch. Now let\'s go to <Step #2>!')
+                self.status.config(fg='blue')
         else:
             self.current_status.set('Status: No file selected.')
             self.status.config(fg='red')
             print 'No file was chosen.'
 
     def launch_scraper(self):
-        # Instantiate InfoScraper Class.
-        self.result_path = 'result_' + str(time.strftime('%Y %m %d %H%M', time.localtime(time.time()))) + '.txt'
-        self.myScraper = InfoScraper(self.source_path, self.result_path)
-        self.myScraper.interval = 5
+        # Clear queue every time launch the scraper.
+        global q
+        q = Queue.Queue()
         # Start the scraper in a new thread
         t = Thread(target=self.myScraper.start_scraper, name='Scraper_Thread')
         t.start()
+        print '<Scraper_Thread> started.'
 
         self.current_status.set('Status: Up and Running! Yay~ The first search result will arrive very soon!')
         self.status.config(fg='red')
@@ -335,8 +345,9 @@ class UI(object):
         self.menu_bar.entryconfig('Abort', state='normal')
 
         # Start Monitor the Scraper, retrieve current status in real-time, and destroy Scraper after job done.
-        t_update = Thread(target=self.monitor, name='UI_Monitor_Thread')
+        t_update = Thread(target=self.monitor, name='Monitor_Thread')
         t_update.start()
+        print '<Monitor_Thread> started.'
 
     # A independent Thread that keeps monitoring the execution of scraper thread.
     # Terminate itself either if user abort scraper thread, or scraper thread is completed.
@@ -349,24 +360,24 @@ class UI(object):
                 current_result = q.get(False)
                 if current_result is not None:
                     current_result = self.display_cutter(current_result)
-                    self.current_status.set('Status: ' + current_result.strip('\n') + ' ......')
+                    self.current_status.set(u'实时搜索结果: '.encode('utf-8') + current_result.strip('\n') + ' ......')
                     self.status.config(fg='black', font=("微软雅黑", 10, 'normal'))
             # When queue is empty, go to next loop immediately.
             except Queue.Empty:
                 pass
             time.sleep(1)
-        print '<UI_Monitor_Thread> terminate completed.'
+        print '<Monitor_Thread> terminate completed.'
         if self.myScraper.service_denied_count > 5:
             self.current_status.set('Status: Oops... Looks like Tianyancha has temporarily blocked me. Help me!!!' +
                                     ' (Scanned ' + str(self.myScraper.completed_item) + ' entries in ' +
                                     self.myScraper.duration + ')')
             self.status.config(fg='red', font=("微软雅黑", 10, 'bold'))
         else:
-            self.current_status.set('Status: Job Done! Please find the <result.txt> under the same folder.' +
+            self.current_status.set('Status: Job Done! Please find the .TXT file under <result> folder.' +
                                     ' Go to <Step #3> if you want!' + ' (Scanned ' + str(self.myScraper.completed_item) +
                                     ' entries in ' + self.myScraper.duration + ')')
             self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
-        print '<UI_Monitor_Thread> Scraper Destroyed.'
+        print '<Monitor_Thread> Scraper Destroyed.'
         self.myScraper = None
         self.menu_bar.entryconfig('Abort', state='disable')
         self.file_menu.entryconfig("Step #3: Post Processing", state='normal')
@@ -403,6 +414,8 @@ class UI(object):
         self.status.config(fg='red')
         if self.myScraper is None:
             self.root.quit()
+        elif self.myScraper.format_error:
+            self.root.quit()
         elif not self.myScraper.abort:
             self.myScraper.terminate()
             self.root.quit()
@@ -412,10 +425,11 @@ class UI(object):
     def post_process(self):
         self.current_status.set('Status: Formatting the result file...')
         self.status.config(fg='red', font=("微软雅黑", 10, 'bold'))
-        f = open(self.result_path, 'r')
+
+        f = open('result\\' + self.result_path, 'r')
         self.proc_path = self.result_path.replace('result', 'processed')
         self.proc_path = self.proc_path.replace('txt', 'csv')
-        marked_file = open(self.proc_path, 'a')
+        marked_file = open('result\\' + self.proc_path, 'a')
         process_content = []
         for line in f:
             zhiwu = u'职务'.encode('utf-8')
@@ -443,6 +457,8 @@ class UI(object):
                 process_content2.append(line)
 
         process_content3 = []
+        table_header = u'序号,原始名称,@,搜索结果,@是否匹配,@,法人,@,注册资本,@,注册时间,@,任职人员,@,股东\n'
+        process_content3.append(table_header.encode('utf-8'))
         for line in process_content2:
             header = []
             header.append(u'公司名称:'.encode('utf-8'))
@@ -463,7 +479,7 @@ class UI(object):
         f.close()
         marked_file.close()
         self.current_status.set('Status: Post-Processing Complete!!! ' +
-                                'Please find the <processed.csv> in the same folder. Enjoy~')
+                                'Please find the .CSV file under <result> folder. Enjoy~')
         self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
 
     def add_mark(self, info, marker):
@@ -477,8 +493,11 @@ class UI(object):
     def about(self):
         showinfo('About This Software', 'Any questions, please contact your husband.')
 
-    def not_implemented(self):
-        showwarning('Sorry~', 'Under Construction...')
+    def warning(self):
+        showwarning('Input File Format Error',
+                    u'诶呀...发现了一个问题...\n\n似乎你选择的这个txt文件的编码格式不是UTF-8。\n'
+                    u'解决办法: 很简单。\n请用记事本打开你的txt文件，在菜单栏点击<文件> - <另存为>，'
+                    u'然后在弹出的新窗口的右下角有一个叫<编码>的下拉列表，选<UTF-8>保存，再尝试这个新文件即可。\n\n谢谢啦...')
 
     def __init__(self):
         self.source_path = ''
@@ -516,7 +535,7 @@ class UI(object):
         self.root.config(menu=self.menu_bar)
 
         self.current_status = StringVar()
-        self.current_status.set('Status: Ready.')
+        self.current_status.set('Status: Ready. Let\'s go to Start Menu - <Step #1>.')
 
         self.status = Label(self.root,
                             textvariable=self.current_status,
@@ -536,4 +555,3 @@ class UI(object):
 
 q = Queue.Queue()
 myUI = UI()
-
