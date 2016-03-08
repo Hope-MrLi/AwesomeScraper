@@ -6,13 +6,20 @@ import time
 import urllib2
 import random
 from threading import Thread
-from Tkinter import *
+import Tkinter
 from tkFileDialog import askopenfilename
-from tkMessageBox import *
+import tkMessageBox
 import Queue
 import exceptions
 import os
+import sys
 
+
+def resource_path(relative):
+    if hasattr(os.sys, '_MEIPASS'):
+        return os.path.join(os.sys._MEIPASS, relative)
+
+    return os.path.join(os.path.abspath("."), relative)
 
 # 关于线程设计的一个关键特性就是避免在里面出现任何blocking的等待特性功能，
 # 因为一旦线程中有了blocking的等待，这个线程就失去了在任何时间都能实时响应外部的请求的能力，
@@ -29,7 +36,6 @@ def search_link_generator(entrylist):
         info = entry.encode('utf-8')
         link = domain + urllib2.quote(info)
         link_list.append(link)
-        # print link
     return link_list
 
 
@@ -159,7 +165,10 @@ class InfoScraper(object):
     def __init__(self, src_path, dst_path):
         self.src_path = src_path
         self.dst_path = dst_path
-        self.browser = webdriver.PhantomJS()
+        exec_path = resource_path('phantomjs.exe')
+        print 'PhantomJS launched at ' + exec_path
+        self.browser = webdriver.PhantomJS(executable_path=exec_path)
+
         self.wait = 5
         self.timer_start = 0
         self.timer_stop = 0
@@ -193,8 +202,8 @@ class InfoScraper(object):
             search_soup = BeautifulSoup(self.browser.page_source, 'html.parser')
             if search_soup.find('div', class_='center') is not None:
                 output = idx + source_name.encode('utf-8') + \
-                         ', Identified as Robot! Current search aborted, wait for 5min.\n'
-                print output
+                         u', 被识别为机器人！静待1分钟...\n'.encode('utf-8')
+                # print output
                 q.put(output)
                 write_file(output, self.dst_path)
                 write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
@@ -203,8 +212,8 @@ class InfoScraper(object):
                 return
             if search_soup.find('title') is not None and '403' in search_soup.find('title').string:
                 output = idx + source_name.encode('utf-8') + \
-                         ', 403 Forbidden! Current search aborted, wait for 5min.\n'
-                print output
+                         u', 403 Forbidden! 静待1分钟...\n'.encode('utf-8')
+                # print output
                 q.put(output)
                 write_file(output, self.dst_path)
                 write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
@@ -222,11 +231,11 @@ class InfoScraper(object):
                 output = idx + source_name.encode('utf-8') + ',' + combined + '\n'
                 write_file(output, self.dst_path)
                 q.put(output)
-                print output
+                # print output
             # Quit if no result returned. (i.e. no tag has class name = query_name)
             else:
                 output = idx + source_name.encode('utf-8') + ',' + 'No result Found.\n'
-                print output
+                # print output
                 q.put(output)
                 write_file(output, self.dst_path)
                 write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
@@ -273,10 +282,10 @@ class InfoScraper(object):
         for i in range(len(self.url_list)):
             if not self.abort:
                 self.scraper(self.url_list[i], self.company_list[i], i)
-                # <Scenario 3>: Service Denied, wait for 5 minute to recover.
+                # <Scenario 3>: Service Denied, wait for 1 minute to recover / user help.
                 if self.service_denied:
                     # Keep monitoring the abort signal during the waiting period.
-                    for cnt in range(300):
+                    for cnt in range(60):
                         time.sleep(1)
                         if self.abort:
                             break
@@ -481,6 +490,7 @@ class UI(object):
         self.current_status.set('Status: Post-Processing Complete!!! ' +
                                 'Please find the .CSV file under <result> folder. Enjoy~')
         self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
+        self.file_menu.entryconfig("Step #3: Post Processing", state='disable')
 
     def add_mark(self, info, marker):
         location = 1 + info.index(',', info.index(':'))
@@ -491,10 +501,10 @@ class UI(object):
         return marked
 
     def about(self):
-        showinfo('About This Software', 'Any questions, please contact your husband.')
+        tkMessageBox.showinfo('About This Software', 'Any questions, please contact your husband.')
 
     def warning(self):
-        showwarning('Input File Format Error',
+        tkMessageBox.showwarning('Input File Format Error',
                     u'诶呀...发现了一个问题...\n\n似乎你选择的这个txt文件的编码格式不是UTF-8。\n'
                     u'解决办法: 很简单。\n请用记事本打开你的txt文件，在菜单栏点击<文件> - <另存为>，'
                     u'然后在弹出的新窗口的右下角有一个叫<编码>的下拉列表，选<UTF-8>保存，再尝试这个新文件即可。\n\n谢谢啦...')
@@ -504,15 +514,17 @@ class UI(object):
         self.result_path = ''
         self.proc_path = ''
         self.myScraper = None
-        self.root = Tk()
+        self.root = Tkinter.Tk()
         self.root.title('Awesome Scraper v1.0')
-        self.root.iconbitmap('icon.ico')
+        icopath = resource_path('icon.ico')
+        if os.path.exists(icopath):
+            self.root.iconbitmap(icopath)
         self.root.geometry("1000x65")
         # Create menu_bar in root.
-        self.menu_bar = Menu(self.root)
+        self.menu_bar = Tkinter.Menu(self.root)
 
         # Create sub menu 'file_menu' of menu_bar.
-        self.file_menu = Menu(self.menu_bar, tearoff=0)
+        self.file_menu = Tkinter.Menu(self.menu_bar, tearoff=0)
         # Add command to the sub menu.
         self.file_menu.add_command(label="Step #1: Choose Source File",
                                    command=self.read_file_location)
@@ -528,16 +540,16 @@ class UI(object):
         self.menu_bar.add_command(label='Abort', command=self.abort, state='disabled')
 
         # Create sub menu 'help_menu' of menu_bar.
-        self.help_menu = Menu(self.menu_bar, tearoff=0)
+        self.help_menu = Tkinter.Menu(self.menu_bar, tearoff=0)
         self.help_menu.add_command(label="About", command=self.about, font=("微软雅黑", 10))
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
 
         self.root.config(menu=self.menu_bar)
 
-        self.current_status = StringVar()
+        self.current_status = Tkinter.StringVar()
         self.current_status.set('Status: Ready. Let\'s go to Start Menu - <Step #1>.')
 
-        self.status = Label(self.root,
+        self.status = Tkinter.Label(self.root,
                             textvariable=self.current_status,
                             bd=20,
                             font=("微软雅黑", 10, 'bold'),
