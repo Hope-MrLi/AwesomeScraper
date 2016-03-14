@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Author: Michael Yuan
 from selenium import webdriver
 from bs4 import BeautifulSoup
 import time
@@ -13,13 +12,20 @@ import exceptions
 import os
 import subprocess
 from win32process import *
+import webbrowser
+
+__author__ = "Michael Yuan"
+__copyright__ = "Copyright 2016"
+__credits__ = "Catrina Meng"
+__license__ = "GPL"
+__version__ = "v1.0.1"
 
 
 # Generate UTF-8 encoded url link of the search path.
-def search_link_generator(entrylist):
+def search_link_generator(entry_list):
     link_list = []
     domain = 'http://www.tianyancha.com/search/'
-    for entry in entrylist:
+    for entry in entry_list:
         info = entry.encode('utf-8')
         link = domain + urllib2.quote(info)
         link_list.append(link)
@@ -400,7 +406,7 @@ class UI(object):
                                     self.myScraper.duration + ')')
             self.status.config(fg='red', font=("微软雅黑", 10, 'bold'))
         else:
-            self.current_status.set('Status: Job Done! Please find the .TXT file under <INSTALL_PATH/result> folder.' +
+            self.current_status.set('Status: Job Done! Please click <Result> button to find your TXT result.' +
                                     ' Go to <Step #3> if you want!' + ' (Scanned ' + str(self.myScraper.completed_item) +
                                     ' entries in ' + self.myScraper.duration + ')')
             self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
@@ -512,7 +518,7 @@ class UI(object):
         f.close()
         marked_file.close()
         self.current_status.set('Status: Post-Processing Complete!!! ' +
-                                'Please find the .CSV file under <INSTALL_PATH/result> folder. Enjoy~')
+                                'Please Click <Result> Button to find your processed CSV file. Enjoy~')
         self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
         self.file_menu.entryconfig("Step #3: Post Processing", state='disable')
 
@@ -523,6 +529,12 @@ class UI(object):
         else:
             marked = info[:location] + 'False' + info[(location-1):]
         return marked
+
+    def shortcut(self):
+        folder = os.getcwd() + '\\result'
+        if not os.path.exists(folder):
+            os.makedirs('result')
+        webbrowser.open(folder)
 
     def about(self):
         tkMessageBox.showinfo('About This Software', 'Any questions, please contact your husband.')
@@ -540,7 +552,7 @@ class UI(object):
         self.processed_path = ''
         self.myScraper = None
         self.root = Tkinter.Tk()
-        self.root.title('Awesome Scraper v1.0')
+        self.root.title('Awesome Scraper ' + __version__)
         ico_path = os.getcwd() + '\\ico\\icon.ico'
         if os.path.exists(ico_path):
             self.root.iconbitmap(ico_path)
@@ -559,11 +571,12 @@ class UI(object):
                                    command=self.post_process, state='disabled')
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Exit", command=self.quit)
-        # Add sub menu 'file' into menu_bar.
+        # Add sub menu 'Start' into menu_bar.
         self.menu_bar.add_cascade(label="Start", menu=self.file_menu, font=10)
-
+        # Add sub menu 'Abort' into menu_bar.
         self.menu_bar.add_command(label='Abort', command=self.abort, state='disabled')
-
+        # Add sub menu 'Path' into menu_bar.
+        self.menu_bar.add_command(label='Result', command=self.shortcut, state='normal')
         # Create sub menu 'help_menu' of menu_bar.
         self.help_menu = Tkinter.Menu(self.menu_bar, tearoff=0)
         self.help_menu.add_command(label="About", command=self.about, font=("微软雅黑", 10))
