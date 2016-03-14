@@ -14,6 +14,7 @@ import os
 import subprocess
 from win32process import *
 
+
 # Generate UTF-8 encoded url link of the search path.
 def search_link_generator(entrylist):
     link_list = []
@@ -149,7 +150,7 @@ class InfoScraper(object):
         self.dst_path = dst_path
 
         # Start PhantomJS as a new process without console window, and let Selenium access it remotely.
-        # This will prevent the stupid black console window of phantomjs being displayed all the time.
+        # This will prevent the stupid black console window of PhantomJS being displayed all the time.
         js_path = (os.getcwd() + '\\lib\\phantomjs.exe', '--webdriver=4444')
         self.proc = subprocess.Popen(
             js_path,
@@ -157,7 +158,8 @@ class InfoScraper(object):
             shell=False,
             creationflags=CREATE_NO_WINDOW
             )
-        time.sleep(2)
+        # Waiting for PhantomJS to initialize. Blocking method.
+        self.proc.stdout.readline()
         self.browser = webdriver.Remote(command_executor='http://127.0.0.1:4444/wd/hub',
                                         desired_capabilities=webdriver.DesiredCapabilities.PHANTOMJS)
 
@@ -169,7 +171,6 @@ class InfoScraper(object):
         self.company_list = []  # List read from user specified txt file.
         self.url_list = []  # URL List generated from company_list.
         self.abort = False  # Flag for signaling the abort of scraper and monitor thread.
-        self.closing = False  # Flag for signaling the scraper thread is ready for exit.
         self.service_denied = False  # Flag indicating the current search url is denied by server.
         self.service_denied_count = 0  # Flag indicating how many times it has been denied.
         self.completed_item = 0
@@ -234,15 +235,22 @@ class InfoScraper(object):
                 q.put(output)
                 write_file(output, self.dst_path)
                 write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
+        # Throw by wait_refresh(), help quickly stop the scraper when user abort.
         except exceptions.RuntimeError:
             output = idx + source_name.encode('utf-8') + ',' + 'User Aborted.\n'
+            write_file(output, self.dst_path)
+            q.put(output)
+        # Throw by self.browser.page_source,
+        # happened only when killing subprocess and accessing page_source at the same time.
+        except urllib2.URLError:
+            output = idx + source_name.encode('utf-8') + ',' + 'User Aborted..\n'
             write_file(output, self.dst_path)
             q.put(output)
         except:
             output = idx + source_name.encode('utf-8') + ',' + 'Exception.\n'
             write_file(output, self.dst_path)
             q.put(output)
-            write_file(output + ' browser closed accidentally.', 'error.log')
+            write_file(output + 'browser closed accidentally.', 'error.log')
 
     # Load the file specified by user. Generate corresponding url.
     def load_file(self):
@@ -250,6 +258,7 @@ class InfoScraper(object):
         self.format_error = False
         self.company_list = []
         bom = '%EF%BB%BF'  # Bom header for UTF-8. Need to take out before generate url.
+        f = None
         try:
             f = open(self.src_path, 'r')
             for line in f:
@@ -284,7 +293,7 @@ class InfoScraper(object):
                         time.sleep(1)
                         if self.abort:
                             break
-                # <Scenario 4>: Service Denied too many time, no point to continue, the scraper exit immediately.
+                # <Scenario 4>: Service Denied too many times, no point to continue, the scraper exit immediately.
                 if self.service_denied_count > 3:
                     break
 
@@ -317,15 +326,19 @@ class UI(object):
         self.file_menu.entryconfig("Step #3: Post Processing", state='disable')
         if len(self.source_path) > 0:
             # Instantiate InfoScraper Class.
+            # If InfoScraper already exist, that is because user already load a file, and trying to reload another one
+            # We need to terminate the corresponding subprocess created for the scraper.
             if self.myScraper is not None:
                 self.myScraper.proc.terminate()
             self.result_path = 'result_' + str(time.strftime('%Y %m %d %H%M', time.localtime(time.time()))) + '.txt'
             self.myScraper = InfoScraper(self.source_path, self.result_path)
             self.myScraper.interval = 5
             self.myScraper.load_file()
+            # Bring the GUI to the front.
             self.root.lift()
             self.root.attributes('-topmost', True)
             self.root.attributes('-topmost', False)
+            # Invalid file format, need to terminate the corresponding subprocess.
             if self.myScraper.format_error:
                 self.warning()
                 self.current_status.set('Status: Oops... Looks like your file is not encoded in UTF-8, '
