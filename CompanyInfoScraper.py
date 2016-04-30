@@ -47,9 +47,10 @@ def extract_info(page_soup):
     result = []
     # company name
     try:
-        company_info = page_soup.find_all('div', class_="row b-c-white show_in_pc")
+        company_info = page_soup.find_all('div', class_="company_info_text")
         if len(company_info) > 0:
-            res = u'公司名称:' + company_info[0].p.string
+            temp = company_info[0].p.text
+            res = u'公司名称:' + temp[:temp.find('\n')]
             result.append(res.encode('utf-8'))
         else:
             result.append('company_info Null')
