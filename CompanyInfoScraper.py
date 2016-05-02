@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from selenium import webdriver
+from selenium import common
 from bs4 import BeautifulSoup
 import time
 import urllib2
@@ -13,12 +14,15 @@ import os
 import subprocess
 from win32process import *
 import webbrowser
+import sys
+import traceback
+import logging
 
 __author__ = "Michael Yuan"
 __copyright__ = "Copyright 2016"
 __credits__ = "Catrina Meng"
 __license__ = "GPL"
-__version__ = "v1.0.1"
+__version__ = "v1.0.2"
 
 
 # Generate UTF-8 encoded url link of the search path.
@@ -42,115 +46,6 @@ def write_file(info, path='result.txt'):
         f.close()
 
 
-# Extract page info
-def extract_info(page_soup):
-    result = []
-    # company name
-    try:
-        company_info = page_soup.find_all('div', class_="company_info_text")
-        if len(company_info) > 0:
-            temp = company_info[0].p.text
-            res = u'公司名称:' + temp[:temp.find('\n')]
-            result.append(res.encode('utf-8'))
-        else:
-            result.append('company_info Null')
-    except:
-        write_file('Extract company_info failed', 'extract_error.log')
-
-    # legal person name
-    try:
-        legal_person_name = page_soup.find_all('td', class_="td-legalPersonName-value c9")
-        if len(legal_person_name) > 0:
-            res = u'法人:' + legal_person_name[0].a.string
-            result.append(res.encode('utf-8'))
-        else:
-            result.append('legal_person_name Null')
-    except:
-        write_file('Extract legal_person_name failed', 'extract_error.log')
-
-    # reg capital
-    try:
-        reg_capital = page_soup.find_all('td', class_="td-regCapital-value")
-        if len(reg_capital) > 0:
-            res = u'注册资本:' + reg_capital[0].p.string
-            result.append(res.replace(',', ' ').encode('utf-8'))
-        else:
-            result.append('reg_capital Null')
-    except:
-        write_file('Extract reg_capital failed', 'extract_error.log')
-
-    # reg time
-    try:
-        reg_time = page_soup.find_all('td', class_="td-regTime-value")
-        if len(reg_time) > 0:
-            res = u'注册时间:' + reg_time[0].p.string
-            result.append(res.encode('utf-8'))
-        else:
-            result.append('reg_time Null')
-    except:
-        write_file('Extract reg_time failed', 'extract_error.log')
-
-    # staff list
-    try:
-        staff_node = page_soup.find_all('div', class_="row b-c-white", style="padding-left:2px;")
-        staff_soup = BeautifulSoup(str(staff_node[0]), 'html.parser')
-        staff_name = staff_soup.find_all('a')
-        staff_title = staff_soup.find_all('span')
-        name_res = [u'任职人员:'.encode('utf-8'),]
-        title_res = [u'职务:'.encode('utf-8'),]
-        if len(staff_name) > 0:
-            for name in staff_name:
-                name_res.append(name.string.encode('utf-8'))
-        else:
-            name_res.append('staff_name Null')
-        result.append(name_res)
-        if len(staff_title) > 0:
-            for title in staff_title:
-                title_res.append(title.string.strip('\n').encode('utf-8'))
-        else:
-            title_res.append('staff_title Null')
-        result.append(title_res)
-    except:
-        write_file('Extract staff_list failed', 'extract_error.log')
-
-    # investor list
-    try:
-        investor_node = page_soup.find_all('div', class_="row b-c-white")
-        investor_soup = BeautifulSoup(str(investor_node[3]), 'html.parser')
-        investor_name = investor_soup.find_all('a')
-        investor_res = [u'股东:'.encode('utf-8'),]
-        exception = u'案件'.encode('utf-8')
-        if len(investor_name) > 0:
-            for investor in investor_name:
-                info = investor.string.encode('utf-8')
-                if exception not in info:
-                    investor_res.append(info)
-                else:
-                    investor_res = [u'股东:'.encode('utf-8'), 'investor_title Null']
-                    break
-        else:
-            investor_res.append('investor_title Null')
-
-        result.append(investor_res)
-    except:
-        write_file('Extract investor_list failed', 'extract_error.log')
-
-    return result
-
-
-def info_combiner(result):
-    combined = ''
-    for item in result:
-        if type(item) != list:
-            combined += item + ','
-        else:
-            combined += item[0]
-            for element in item[1:]:
-                combined += element + ','
-    combined = combined.strip('\n')
-    return combined
-
-
 class InfoScraper(object):
     def __init__(self, src_path, dst_path):
         self.src_path = src_path
@@ -169,8 +64,9 @@ class InfoScraper(object):
         self.proc.stdout.readline()
         self.browser = webdriver.Remote(command_executor='http://127.0.0.1:4444/wd/hub',
                                         desired_capabilities=webdriver.DesiredCapabilities.PHANTOMJS)
-
-        self.wait = 5
+        self.browser.set_page_load_timeout(30)
+        logging.info('PhantomJS launched successfully.')
+        self.wait = 7
         self.timer_start = 0
         self.timer_stop = 0
         self.duration = ''
@@ -180,6 +76,8 @@ class InfoScraper(object):
         self.abort = False  # Flag for signaling the abort of scraper and monitor thread.
         self.service_denied = False  # Flag indicating the current search url is denied by server.
         self.service_denied_count = 0  # Flag indicating how many times it has been denied.
+        self.service_denied_limits = 4
+        self.service_denied_timer = 1
         self.completed_item = 0
 
     # Waiting for web page to refresh, but keep monitor if user want to abort.
@@ -189,6 +87,12 @@ class InfoScraper(object):
                 raise exceptions.RuntimeError
             time.sleep(0.5)
 
+    def load_url(self, search_link):
+        try:
+            self.browser.get(search_link)
+        except:
+            logging.error('CRITIAL!!! load_URL fail to respond and has to be killed.')
+
     # Since the content tag does not include all require info, we need to parse each field.
     # Parse each required fields separately and combine into one string, write into result.txt.
     def scraper(self, search_link, source_name, idx):
@@ -196,68 +100,245 @@ class InfoScraper(object):
             self.completed_item = idx + 1
             idx = str(idx + 1) + ','
             self.service_denied = False
-            self.browser.get(search_link)
+            # Run browser.get method on a separate thread, stop scraper if it timeout.
+            t_loadURL = Thread(target=self.load_url, args=(search_link,), name='LoadURL_Thread')
+            t_loadURL.start()
+            t_loadURL.join(timeout=30)
+            # Terminate scraper and load_url.
+            if t_loadURL.isAlive():
+                raise common.exceptions.TimeoutException
             self.wait_refresh(self.wait)
+            logging.info('Search Started. Target: ' + idx + source_name.encode('utf-8') + '\n')
             # Handle scenario when request is identified as robot:
             search_soup = BeautifulSoup(self.browser.page_source, 'html.parser')
+            search_soup_text = search_soup.text
+            robot_signal = u'滑块'.encode('utf-8')
+            forbidden_signal = 'Forbidden'
 
-            if search_soup.find('div', class_='center') is not None:
-                output = idx + source_name.encode('utf-8') + \
-                         u', 被识别为机器人! \n'.encode('utf-8')
-                # print output
+            if search_soup_text is None:
+                self.service_denied = True
+                self.service_denied_count += 1
+                logging.info('No content in Search page.')
+                return
+
+            if robot_signal in search_soup_text.encode('utf-8'):
+                output = idx + source_name.encode('utf-8') + u', 被识别为机器人! \n'.encode('utf-8')
+                print output
                 q.put(output)
                 write_file(output, self.dst_path)
-                write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
+                logging.error(idx + source_name.encode('utf-8') +
+                              ': Treated as robot. Page Source: \n' + ('#' * 150 + '\n') * 5 +
+                              self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
                 self.service_denied = True
                 self.service_denied_count += 1
                 return
 
-            if search_soup.find('title') is not None and '403' in search_soup.find('title').string:
-                output = idx + source_name.encode('utf-8') + \
-                         u', 403 Forbidden! \n'.encode('utf-8')
-                # print output
+            if forbidden_signal in search_soup_text.encode('utf-8'):
+                output = idx + source_name.encode('utf-8') + u', 403 Forbidden! \n'.encode('utf-8')
+                print output
                 q.put(output)
                 write_file(output, self.dst_path)
-                write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
+                logging.error(idx + source_name.encode('utf-8') +
+                              ': 403 Forbidden. Page Source: \n' + ('#' * 150 + '\n') * 5 +
+                              self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
                 self.service_denied = True
                 self.service_denied_count += 1
                 return
 
             # Click the first result if there are result returned.
             if search_soup.find(class_='query_name') is not None:
+                logging.info(idx + source_name.encode('utf-8') +
+                             ': Found valid entry in search page. Ready to click the first result.')
                 self.browser.find_element_by_class_name('query_name').click()
                 self.wait_refresh(self.wait)
-                # Extract info from the new web page.
                 page_soup = BeautifulSoup(self.browser.page_source, 'html.parser')
-                result = extract_info(page_soup)
-                combined = info_combiner(result)
+                # Handle the robot detection occurred after click.
+                if robot_signal in page_soup.text.encode('utf-8'):
+                    output = idx + source_name.encode('utf-8') + u', 被识别为机器人! \n'.encode('utf-8')
+                    print output
+                    q.put(output)
+                    write_file(output, self.dst_path)
+                    logging.error(idx + source_name.encode('utf-8') +
+                                  ': Treated as robot. Page Source: \n' + ('#' * 150 + '\n') * 5 +
+                                  self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
+                    self.service_denied = True
+                    self.service_denied_count += 1
+                    return
+                # Extract info from the new web page.
+                logging.info('Extraction started!!!')
+                result = self.extract_info(page_soup)
+                combined = self.info_combiner(result)
+                # Record page source for investigation if not all field is extracted.
+                if 'Null' in combined:
+                    logging.error(idx + source_name.encode('utf-8') +
+                                  ': Not all field extracted. Page Source: \n' + ('#' * 150 + '\n') * 5 +
+                                  self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
+                logging.info('Extraction completed!!!')
                 output = idx + source_name.encode('utf-8') + ',' + combined + '\n'
                 write_file(output, self.dst_path)
-                # print output
+                print output
                 q.put(output)
             # Quit if no result returned. (i.e. no tag has class name = query_name)
             else:
                 output = idx + source_name.encode('utf-8') + ',' + 'No result Found.\n'
-                # print output
+                print output
                 q.put(output)
                 write_file(output, self.dst_path)
-                write_file(output + self.browser.page_source.encode('utf-8'), 'error.log')
+                logging.info(idx + source_name.encode('utf-8') + ': No valid entry in Search Page.\n')
+                # logging.error(idx + source_name.encode('utf-8') +
+                #               ': No valid entry in Search Page. Page Source: \n' + ('#' * 150 + '\n') * 5 +
+                #               self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
         # Throw by wait_refresh(), help quickly stop the scraper when user abort.
         except exceptions.RuntimeError:
+            logging.info('User aborted during wait_refresh.')
             output = idx + source_name.encode('utf-8') + ',' + 'User Aborted.\n'
+            print output
             write_file(output, self.dst_path)
             q.put(output)
         # Throw by self.browser.page_source,
         # happened only when killing subprocess and accessing page_source at the same time.
         except urllib2.URLError:
+            logging.info('Killing subprocess and accessing page_source at the same time')
             output = idx + source_name.encode('utf-8') + ',' + 'User Aborted..\n'
+            print output
             write_file(output, self.dst_path)
             q.put(output)
+        # happened when selenium method timeout.
+        except common.exceptions.TimeoutException:
+            logging.error('Selenium page_load or script execution timeout.')
+            output = idx + source_name.encode('utf-8') + ',' + 'Timeout loading webpage..\n'
+            print output
+            write_file(output, self.dst_path)
+            q.put(output)
+            self.service_denied = True
+            self.service_denied_count += 10
         except:
+            logging.error(idx + source_name.encode('utf-8') +
+                          ': Exception during webpage parsing.  \n' + traceback.format_exc() + '\n' +
+                          ('#' * 150 + '\n') * 5 + self.browser.page_source.encode('utf-8') +
+                          '\n' + ('#' * 150 + '\n') * 5)
             output = idx + source_name.encode('utf-8') + ',' + 'Exception.\n'
+            print output
             write_file(output, self.dst_path)
             q.put(output)
-            write_file(output + 'browser closed accidentally.', 'error.log')
+            self.service_denied = True
+            self.service_denied_count += 1
+
+    # Extract page info
+    def extract_info(self, page_soup):
+        result = []
+        # PART 1: company name
+        try:
+            company_info = page_soup.find_all('div', class_="company_info_text")
+            if len(company_info) > 0:
+                temp = company_info[0].p.text
+                res = u'公司名称:' + temp[:temp.find('\n')]
+                result.append(res.encode('utf-8'))
+            else:
+                result.append('company_info Null')
+        except:
+            logging.error('Extract company_info failed\n' + traceback.format_exc())
+
+        # PART 2: legal person name
+        try:
+            legal_person_name = page_soup.find_all('td', class_="td-legalPersonName-value c9")
+            if len(legal_person_name) > 0:
+                if legal_person_name[0].a is not None:
+                    res = u'法人:' + legal_person_name[0].a.string
+                else:
+                    res = u'法人:未公开'
+                result.append(res.encode('utf-8'))
+            else:
+                result.append('legal_person_name Null')
+        except:
+            logging.error('Extract legal_person_name failed\n' + traceback.format_exc())
+
+        # PART 3: reg capital
+        try:
+            reg_capital = page_soup.find_all('td', class_="td-regCapital-value")
+            if len(reg_capital) > 0:
+                res = u'注册资本:' + reg_capital[0].p.string
+                result.append(res.replace(',', ' ').encode('utf-8'))
+            else:
+                result.append('reg_capital Null')
+        except:
+            logging.error('Extract reg_capital failed\n' + traceback.format_exc())
+
+        # PART 4: reg time
+        try:
+            reg_time = page_soup.find_all('td', class_="td-regTime-value")
+            if len(reg_time) > 0:
+                res = u'注册时间:' + reg_time[0].p.string
+                result.append(res.encode('utf-8'))
+            else:
+                result.append('reg_time Null')
+        except:
+            logging.error('Extract reg_time failed\n' + traceback.format_exc())
+
+        # PART 5: staff list
+        try:
+            staff_node = page_soup.find_all('div', class_="row b-c-white", style="padding-left:2px;")
+            if len(staff_node) > 0:
+                staff_soup = BeautifulSoup(str(staff_node[0]), 'html.parser')
+                staff_name = staff_soup.find_all('a')
+                staff_title = staff_soup.find_all('span')
+                name_res = [u'任职人员:'.encode('utf-8'),]
+                title_res = [u'职务:'.encode('utf-8'),]
+                if len(staff_name) > 0:
+                    for name in staff_name:
+                        name_res.append(name.string.encode('utf-8'))
+                else:
+                    name_res.append('staff_name Null')
+                result.append(name_res)
+                if len(staff_title) > 0:
+                    for title in staff_title:
+                        title_res.append(title.string.strip('\n').encode('utf-8'))
+                else:
+                    title_res.append('staff_title Null')
+                result.append(title_res)
+            else:
+                result.append('staff_list Null')
+        except:
+            logging.error('Extract staff_list failed\n' + traceback.format_exc())
+
+        # PART 6: investor list
+        try:
+            investor_node = page_soup.find_all('div', class_="row b-c-white")
+            if len(investor_node) > 3:
+                investor_soup = BeautifulSoup(str(investor_node[3]), 'html.parser')
+                investor_name = investor_soup.find_all('a')
+                investor_res = [u'股东:'.encode('utf-8'),]
+                exception = u'案件'.encode('utf-8')
+                if len(investor_name) > 0:
+                    for investor in investor_name:
+                        info = investor.string.encode('utf-8')
+                        # Valid node, append info
+                        if exception not in info:
+                            investor_res.append(info)
+                        # Invalid node, null
+                        else:
+                            investor_res.append('investor_list Null')
+                            break
+                else:
+                    investor_res.append('investor_list Null')
+                result.append(investor_res)
+            else:
+                result.append('investor_list Null')
+        except:
+            logging.error('Extract investor_list failed\n' + traceback.format_exc())
+        return result
+
+    def info_combiner(self, result):
+        combined = ''
+        for item in result:
+            if type(item) != list:
+                combined += item + ','
+            else:
+                combined += item[0]
+                for element in item[1:]:
+                    combined += element + ','
+        combined = combined.strip('\n')
+        return combined
 
     # Load the file specified by user. Generate corresponding url.
     def load_file(self):
@@ -288,26 +369,29 @@ class InfoScraper(object):
     # 4. Service denied too many times, no point to continue, the scraper exit immediately.
     # This will guarantee 'terminate()' to be called in any of the scenarios.
     def start_scraper(self):
+        logging.info('Scraper officially started.')
         self.timer_start = time.time()
 
         for i in range(len(self.url_list)):
             if not self.abort:
                 self.scraper(self.url_list[i], self.company_list[i], i)
+                # <Scenario 4>: Service Denied too many times, no point to continue, the scraper exit immediately.
+                if self.service_denied_count >= self.service_denied_limits:
+                    logging.info('Stop scraper due to service denied.')
+                    break
                 # <Scenario 3>: Service Denied, wait for 1 minute to recover / user help.
                 if self.service_denied:
                     # Keep monitoring the abort signal during the waiting period.
-                    for cnt in range(60):
+                    for cnt in range(self.service_denied_timer):
                         time.sleep(1)
                         if self.abort:
                             break
-                # <Scenario 4>: Service Denied too many times, no point to continue, the scraper exit immediately.
-                if self.service_denied_count > 3:
-                    break
 
         self.timer_stop = time.time()
         diff = (self.timer_stop - self.timer_start) / 60
         self.duration = '%.1f min. ' % diff
         print 'Total Time = ' + self.duration
+        logging.info('Total Time = ' + self.duration)
 
         # <Scenario 1>: Scraper finished searching all items and exit normally.
         if not self.abort:
@@ -318,10 +402,12 @@ class InfoScraper(object):
     # i.e. the moment closing flag become True, the current iteration is completed, so browser can be destroyed safely.
     def terminate(self):
         self.abort = True
-        print '<Scraper_Thread> terminate start.'
-        self.browser.quit()
+        print '<Scraper_Thread> Stopping Scraper_Thread...'
+        logging.info('<Scraper_Thread> Stopping Scraper_Thread...')
+        # self.browser.quit()
         self.proc.terminate()
-        print '<Scraper_Thread> terminate completed.'
+        print '<Scraper_Thread> Scraper_Thread Terminated.'
+        logging.info('<Scraper_Thread> Scraper_Thread Terminated.')
 
 
 class UI(object):
@@ -371,6 +457,7 @@ class UI(object):
         t = Thread(target=self.myScraper.start_scraper, name='Scraper_Thread')
         t.start()
         print '<Scraper_Thread> started.'
+        logging.info('<Scraper_Thread> started.')
 
         self.current_status.set('Status: Up and Running! Yay~ The first search result will arrive very soon!')
         self.status.config(fg='red')
@@ -379,13 +466,14 @@ class UI(object):
         self.menu_bar.entryconfig('Abort', state='normal')
 
         # Start Monitor the Scraper, retrieve current status in real-time, and destroy Scraper after job done.
-        t_update = Thread(target=self.monitor, name='Monitor_Thread')
+        t_update = Thread(target=self.monitor, args=(t,), name='Monitor_Thread')
         t_update.start()
         print '<Monitor_Thread> started.'
+        logging.info('<Monitor_Thread> started.')
 
     # A independent Thread that keeps monitoring the execution of scraper thread.
     # Terminate itself either if user abort scraper thread, or scraper thread is completed.
-    def monitor(self):
+    def monitor(self, t):
         while not self.myScraper.abort:
             try:
                 # Make it unblocking, so that this thread won't stuck here forever.
@@ -400,9 +488,11 @@ class UI(object):
             except Queue.Empty:
                 pass
             time.sleep(1)
-        print '<Monitor_Thread> terminate completed.'
-        if self.myScraper.service_denied_count > 3:
-            self.current_status.set('Status: Oops... Looks like Tianyancha has temporarily blocked me. Help me!!!' +
+        print '<Monitor_Thread> Exit monitor state, cleanup...'
+        logging.info('<Monitor_Thread> Exit monitor state, cleanup...')
+        if self.myScraper.service_denied_count >= self.myScraper.service_denied_limits:
+            self.current_status.set('Status: Oops... Tianyancha has temporarily blocked me. ' +
+                                    'Please retry if you can access Tianyancha normally.' +
                                     ' (Scanned ' + str(self.myScraper.completed_item) + ' entries in ' +
                                     self.myScraper.duration + ')')
             self.status.config(fg='red', font=("微软雅黑", 10, 'bold'))
@@ -411,11 +501,20 @@ class UI(object):
                                     ' Go to <Step #3> if you want!' + ' (Scanned ' + str(self.myScraper.completed_item) +
                                     ' entries in ' + self.myScraper.duration + ')')
             self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
-        print '<Monitor_Thread> Scraper Destroyed.'
+        for i in range(0, 3):
+            print 'Scraper thread Alive = ' + str(t.isAlive())
+            if t.isAlive():
+                time.sleep(1)
         self.myScraper = None
+        print '<Monitor_Thread> Scraper Object Destroyed.'
+        logging.info('<Monitor_Thread> Scraper Object Destroyed.')
         self.menu_bar.entryconfig('Abort', state='disable')
         self.file_menu.entryconfig("Step #3: Post Processing", state='normal')
         self.file_menu.entryconfig("Step #1: Choose Source File", state='normal')
+        # When search completed or service_denied too many times, bring the GUI to top to notify user.
+        self.bring_to_top()
+        print '<Monitor_Thread> Monitor_Thread Terminated.'
+        logging.info('<Monitor_Thread> Monitor_Thread Terminated.')
 
     def display_formatter(self, res):
         # Inform delay if identified as robot or service denial.
@@ -547,6 +646,9 @@ class UI(object):
                                  u'然后在弹出的新窗口的右下角有一个叫<编码>的下拉列表，选<UTF-8>保存，再尝试这个新文件即可。'
                                  u'\n\n谢谢啦...')
 
+    def bring_to_top(self):
+        self.root.focus_force()
+
     def __init__(self):
         self.source_path = ''
         self.result_path = ''
@@ -604,5 +706,9 @@ class UI(object):
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.mainloop()
 
+logging.basicConfig(filename='result\\error.log',
+                    filemode='w',
+                    format='[%(asctime)s] - [%(levelname)s] >>> %(message)s',
+                    level=logging.INFO)
 q = Queue.Queue()
 myUI = UI()
