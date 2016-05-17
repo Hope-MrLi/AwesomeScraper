@@ -14,7 +14,6 @@ import os
 import subprocess
 from win32process import *
 import webbrowser
-import sys
 import traceback
 import logging
 
@@ -22,7 +21,7 @@ __author__ = "Michael Yuan"
 __copyright__ = "Copyright 2016"
 __credits__ = "Catrina Meng"
 __license__ = "GPL"
-__version__ = "v1.0.2"
+__version__ = "v1.0.3"
 
 
 # Generate UTF-8 encoded url link of the search path.
@@ -229,59 +228,71 @@ class InfoScraper(object):
         result = []
         # PART 1: company name
         try:
+            # Target - <div class="company_info_text"> - <p>
             company_info = page_soup.find_all('div', class_="company_info_text")
+            tag = u'公司名称:'
             if len(company_info) > 0:
                 temp = company_info[0].p.text
-                res = u'公司名称:' + temp[:temp.find('\n')]
+                res = tag + temp[:temp.find('\n')]
                 result.append(res.encode('utf-8'))
             else:
-                result.append('company_info Null')
+                result.append((tag + 'company_info Null').encode('utf-8'))
         except:
             logging.error('Extract company_info failed\n' + traceback.format_exc())
 
         # PART 2: legal person name
         try:
+            # Target - <td class="td-legalPersonName-value c9"> - <a>
             legal_person_name = page_soup.find_all('td', class_="td-legalPersonName-value c9")
+            tag = u'法人:'
             if len(legal_person_name) > 0:
                 if legal_person_name[0].a is not None:
-                    res = u'法人:' + legal_person_name[0].a.string
+                    res = tag + legal_person_name[0].a.string
                 else:
-                    res = u'法人:未公开'
+                    res = tag + u'未公开'
                 result.append(res.encode('utf-8'))
             else:
-                result.append('legal_person_name Null')
+                result.append((tag + 'legal_person_name Null').encode('utf-8'))
         except:
             logging.error('Extract legal_person_name failed\n' + traceback.format_exc())
 
         # PART 3: reg capital
         try:
+            # Target - <td class="td-regCapital-value"> - <p>
             reg_capital = page_soup.find_all('td', class_="td-regCapital-value")
+            tag = u'注册资本:'
             if len(reg_capital) > 0:
-                res = u'注册资本:' + reg_capital[0].p.string
+                res = tag + reg_capital[0].p.string
                 result.append(res.replace(',', ' ').encode('utf-8'))
             else:
-                result.append('reg_capital Null')
+                result.append((tag + 'reg_capital Null').encode('utf-8'))
         except:
             logging.error('Extract reg_capital failed\n' + traceback.format_exc())
 
         # PART 4: reg time
         try:
+            # Target - <td class="td-regTime-value"> - <p>
             reg_time = page_soup.find_all('td', class_="td-regTime-value")
+            tag = u'注册时间:'
             if len(reg_time) > 0:
-                res = u'注册时间:' + reg_time[0].p.string
+                res = tag + reg_time[0].p.string
                 result.append(res.encode('utf-8'))
             else:
-                result.append('reg_time Null')
+                result.append((tag + 'reg_time Null').encode('utf-8'))
         except:
             logging.error('Extract reg_time failed\n' + traceback.format_exc())
 
         # PART 5: staff list
         try:
-            staff_node = page_soup.find_all('div', class_="row b-c-white", style="padding-left:2px;")
-            if len(staff_node) > 0:
-                staff_soup = BeautifulSoup(str(staff_node[0]), 'html.parser')
-                staff_name = staff_soup.find_all('a')
-                staff_title = staff_soup.find_all('span')
+            # Target - <div ng-if="company.staffList.length>0" class="ng-scope"> - <a> & <span>
+            # Exclude - similar node that has "id"="nav-main-staff"
+            staff_node = page_soup.find_all('div', attrs={
+                                    "ng-if": "company.staffList.length>0",
+                                    "class": "ng-scope",
+                                    "id": ""})
+            if len(staff_node) > 0 and staff_node[0] is not None:
+                staff_name = staff_node[0].find_all('a')
+                staff_title = staff_node[0].find_all('span')
                 name_res = [u'任职人员:'.encode('utf-8'),]
                 title_res = [u'职务:'.encode('utf-8'),]
                 if len(staff_name) > 0:
@@ -297,33 +308,29 @@ class InfoScraper(object):
                     title_res.append('staff_title Null')
                 result.append(title_res)
             else:
-                result.append('staff_list Null')
+                result.append((u'任职人员:' + 'staff_list Null').encode('utf-8'))
         except:
             logging.error('Extract staff_list failed\n' + traceback.format_exc())
 
         # PART 6: investor list
         try:
-            investor_node = page_soup.find_all('div', class_="row b-c-white")
-            if len(investor_node) > 3:
-                investor_soup = BeautifulSoup(str(investor_node[3]), 'html.parser')
-                investor_name = investor_soup.find_all('a')
+            # Target - <div ng-if="company.investorList.length>0" class="ng-scope"> - <a>
+            # Exclude - similar node that has "id"="nav-main-investment"
+            investor_node = page_soup.find_all('div', attrs={
+                                                "ng-if": "company.investorList.length>0",
+                                                "class": "ng-scope",
+                                                "id": ""})
+            if len(investor_node) > 0 and investor_node[0] is not None:
+                investor_name = investor_node[0].find_all('a')
                 investor_res = [u'股东:'.encode('utf-8'),]
-                exception = u'案件'.encode('utf-8')
                 if len(investor_name) > 0:
                     for investor in investor_name:
-                        info = investor.string.encode('utf-8')
-                        # Valid node, append info
-                        if exception not in info:
-                            investor_res.append(info)
-                        # Invalid node, null
-                        else:
-                            investor_res.append('investor_list Null')
-                            break
+                        investor_res.append(investor.string.encode('utf-8'))
                 else:
                     investor_res.append('investor_list Null')
                 result.append(investor_res)
             else:
-                result.append('investor_list Null')
+                result.append((u'股东:' + 'investor_list Null').encode('utf-8'))
         except:
             logging.error('Extract investor_list failed\n' + traceback.format_exc())
         return result
@@ -617,10 +624,53 @@ class UI(object):
             marked_file.write(line.decode('utf-8').encode('mbcs'))
         f.close()
         marked_file.close()
+        self.remove_duplicate(process_content3)
         self.current_status.set('Status: Post-Processing Complete!!! ' +
                                 'Please Click <Result> Button to find your processed CSV file. Enjoy~')
         self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
         self.file_menu.entryconfig("Step #3: Post Processing", state='disable')
+
+    def remove_duplicate(self, processed_content):
+        deduplicate_content = []
+        header = u'序号,原始名称,@,搜索结果,@是否匹配,@,人名列表\n'
+        deduplicate_content.append(header.encode('utf-8'))
+        for line in processed_content[1:]:
+            splitted = line.replace('\n', '').split(',@,')  # Remove next line first for better splitting.
+            field_num = len(splitted)
+            if field_num < 5:
+                deduplicate_content.append(line)
+            # Pass the first three if only five segment. (No employee or investor)
+            elif field_num == 5:               
+                deduplicate_content.append(',@,'.join(splitted[:3]) + '\n')
+            elif field_num >= 6:
+                legal_person = splitted[2]
+                employees = splitted[5].split(',')
+                name_list = []
+                name_list.append(legal_person)
+                name_list += employees
+                # Add 7th segment if possible
+                if field_num == 7:
+                    investors = splitted[6].split(',')
+                    name_list += investors
+                # Clean name_list first, remove element that contain 'Null'
+                name_list = [name for name in name_list if 'Null' not in name]
+                if len(name_list) > 0 and name_list != ['']:
+                    # Remove duplicate with one-liner
+                    name_clean = {}.fromkeys(name_list).keys()
+                    name_clean = filter(None, name_clean)  # Remove empty element.
+                    name_clean = [x.replace(',', '') for x in name_clean]  # Remove extra comma
+                    name_clean = ','.join(name_clean)
+                else:
+                    name_clean = "Null"
+                splitted[2] = name_clean  # replace the 3rd with new name list.
+                deduplicate_content.append(',@,'.join(splitted[:3]) + '\n')
+
+        duplicate_removal_path = self.result_path.replace('result', 'processed')
+        duplicate_removal_path = duplicate_removal_path.replace('.txt', '_remove_duplicate.csv')
+        duplicate_remove = open('result\\' + duplicate_removal_path, 'a')
+        for line in deduplicate_content:
+            duplicate_remove.write(line.decode('utf-8').encode('mbcs'))
+        duplicate_remove.close()
 
     def add_mark(self, info, marker):
         location = 1 + info.index(',', info.index(':'))
@@ -706,6 +756,8 @@ class UI(object):
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.mainloop()
 
+if not os.path.exists('result'):
+    os.makedirs('result')
 logging.basicConfig(filename='result\\error.log',
                     filemode='w',
                     format='[%(asctime)s] - [%(levelname)s] >>> %(message)s',
