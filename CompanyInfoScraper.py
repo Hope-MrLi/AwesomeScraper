@@ -21,7 +21,7 @@ __author__ = "Michael Yuan"
 __copyright__ = "Copyright 2016"
 __credits__ = "Catrina Meng"
 __license__ = "GPL"
-__version__ = "v1.0.3"
+__version__ = "v1.0.4"
 
 
 # Generate UTF-8 encoded url link of the search path.
@@ -53,6 +53,9 @@ class InfoScraper(object):
         # Start PhantomJS as a new process without console window, and let Selenium access it remotely.
         # This will prevent the stupid black console window of PhantomJS being displayed all the time.
         js_path = (os.getcwd() + '\\lib\\phantomjs.exe', '--webdriver=4444')
+        # js_path = os.getcwd() + '\\lib\\phantomjs.exe'
+        # js_path = os.getcwd() + '\\lib\\chromedriver.exe'
+        # self.browser = webdriver.PhantomJS(executable_path=js_path)
         self.proc = subprocess.Popen(
             js_path,
             stdout=subprocess.PIPE,
@@ -90,7 +93,7 @@ class InfoScraper(object):
         try:
             self.browser.get(search_link)
         except:
-            logging.error('CRITIAL!!! load_URL fail to respond and has to be killed.')
+            logging.error('CRITICAL!!! load_URL fail to respond and has to be killed.')
 
     # Since the content tag does not include all require info, we need to parse each field.
     # Parse each required fields separately and combine into one string, write into result.txt.
@@ -99,6 +102,8 @@ class InfoScraper(object):
             self.completed_item = idx + 1
             idx = str(idx + 1) + ','
             self.service_denied = False
+            # self.browser.get(search_link)
+            # Using non-blocking way to avoid API failure
             # Run browser.get method on a separate thread, stop scraper if it timeout.
             t_loadURL = Thread(target=self.load_url, args=(search_link,), name='LoadURL_Thread')
             t_loadURL.start()
@@ -147,8 +152,22 @@ class InfoScraper(object):
             # Click the first result if there are result returned.
             if search_soup.find(class_='query_name') is not None:
                 logging.info(idx + source_name.encode('utf-8') +
-                             ': Found valid entry in search page. Ready to click the first result.')
-                self.browser.find_element_by_class_name('query_name').click()
+                             ': Found valid entry in search page. Ready to access the first result.')
+                # self.browser.find_element_by_class_name('query_name').click()
+                # Somehow the click action does not work for PhantomJS anymore.
+                # Workaround by access the page directly using href.
+                entry_link = 'http://www.tianyancha.com' + search_soup.find(class_='query_name').get('href')
+                logging.info('About to Access Entry link: ' + entry_link)
+
+                # self.browser.get(entry_link)
+                # Using non-blocking way to avoid API failure
+                # Run browser.get method on a separate thread, stop scraper if it timeout.
+                t_loadURL = Thread(target=self.load_url, args=(entry_link,), name='LoadURL_Thread')
+                t_loadURL.start()
+                t_loadURL.join(timeout=30)
+                # Terminate scraper and load_url.
+                if t_loadURL.isAlive():
+                    raise common.exceptions.TimeoutException
                 self.wait_refresh(self.wait)
                 page_soup = BeautifulSoup(self.browser.page_source, 'html.parser')
                 # Handle the robot detection occurred after click.
@@ -430,6 +449,7 @@ class UI(object):
             # We need to terminate the corresponding subprocess created for the scraper.
             if self.myScraper is not None:
                 self.myScraper.proc.terminate()
+                # self.myScraper.browser.quit()
             self.result_path = 'result_' + str(time.strftime('%Y %m %d %H%M', time.localtime(time.time()))) + '.txt'
             self.myScraper = InfoScraper(self.source_path, self.result_path)
             self.myScraper.interval = 5
@@ -446,6 +466,7 @@ class UI(object):
                 self.status.config(fg='red')
                 self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='disable')
                 self.myScraper.proc.terminate()
+                # self.myScraper.browser.quit()
             else:
                 self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='normal')
                 self.current_status.set('Status: Source file validated. Ready to Launch. Now let\'s go to <Step #2>!')
