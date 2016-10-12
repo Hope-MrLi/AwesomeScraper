@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from selenium import webdriver
 from selenium import common
+from selenium.common.exceptions import *
 from bs4 import BeautifulSoup
 import time
 import urllib2
@@ -11,8 +12,6 @@ import tkMessageBox
 import Queue
 import exceptions
 import os
-import subprocess
-from win32process import *
 import webbrowser
 import traceback
 import logging
@@ -21,7 +20,7 @@ __author__ = "Michael Yuan"
 __copyright__ = "Copyright 2016"
 __credits__ = "Catrina Meng"
 __license__ = "GPL"
-__version__ = "v1.0.4"
+__version__ = "v1.0.5"
 
 
 # Generate UTF-8 encoded url link of the search path.
@@ -50,24 +49,10 @@ class InfoScraper(object):
         self.src_path = src_path
         self.dst_path = dst_path
 
-        # Start PhantomJS as a new process without console window, and let Selenium access it remotely.
-        # This will prevent the stupid black console window of PhantomJS being displayed all the time.
-        js_path = (os.getcwd() + '\\lib\\phantomjs.exe', '--webdriver=4444')
-        # js_path = os.getcwd() + '\\lib\\phantomjs.exe'
-        # js_path = os.getcwd() + '\\lib\\chromedriver.exe'
-        # self.browser = webdriver.PhantomJS(executable_path=js_path)
-        self.proc = subprocess.Popen(
-            js_path,
-            stdout=subprocess.PIPE,
-            shell=False,
-            creationflags=CREATE_NO_WINDOW
-            )
-        # Waiting for PhantomJS to initialize. Blocking method.
-        self.proc.stdout.readline()
-        self.browser = webdriver.Remote(command_executor='http://127.0.0.1:4444/wd/hub',
-                                        desired_capabilities=webdriver.DesiredCapabilities.PHANTOMJS)
+        js_path = os.getcwd() + '\\lib\\chromedriver.exe'
+        self.browser = webdriver.Chrome(executable_path=js_path)
         self.browser.set_page_load_timeout(30)
-        logging.info('PhantomJS launched successfully.')
+        logging.info('ChromeDriver launched successfully.')
         self.wait = 7
         self.timer_start = 0
         self.timer_stop = 0
@@ -81,6 +66,8 @@ class InfoScraper(object):
         self.service_denied_limits = 4
         self.service_denied_timer = 1
         self.completed_item = 0
+        self.page_source = ''
+        self.browser_closed_unexpected = False
 
     # Waiting for web page to refresh, but keep monitor if user want to abort.
     def wait_refresh(self, interval):
@@ -91,10 +78,19 @@ class InfoScraper(object):
 
     def load_url(self, search_link):
         try:
+            self.browser_closed_unexpected = False
+            print self.browser.window_handles
             self.browser.get(search_link)
+            self.wait_refresh(self.wait)
+            self.page_source = self.browser.page_source
+        except WebDriverException:
+            self.browser_closed_unexpected = True
+            self.abort = True
+            logging.error('Browser was accidentally closed. Abort Scraper.')
         except:
-            logging.error('CRITICAL!!! load_URL fail to respond and has to be killed.')
+            logging.error('Abort load_url method unexpectedly.')
 
+    # self.browser sometimes will hung up, which cause the browser.get() and browser.page_source freeze the scraper.
     # Since the content tag does not include all require info, we need to parse each field.
     # Parse each required fields separately and combine into one string, write into result.txt.
     def scraper(self, search_link, source_name, idx):
@@ -102,19 +98,20 @@ class InfoScraper(object):
             self.completed_item = idx + 1
             idx = str(idx + 1) + ','
             self.service_denied = False
-            # self.browser.get(search_link)
-            # Using non-blocking way to avoid API failure
-            # Run browser.get method on a separate thread, stop scraper if it timeout.
+            logging.info('Search Started. Target: ' + idx + source_name.encode('utf-8') + '\n')
             t_loadURL = Thread(target=self.load_url, args=(search_link,), name='LoadURL_Thread')
             t_loadURL.start()
             t_loadURL.join(timeout=30)
             # Terminate scraper and load_url.
             if t_loadURL.isAlive():
+                logging.info('Time out for browser. Throw TimeoutException.')
                 raise common.exceptions.TimeoutException
-            self.wait_refresh(self.wait)
-            logging.info('Search Started. Target: ' + idx + source_name.encode('utf-8') + '\n')
-            # Handle scenario when request is identified as robot:
-            search_soup = BeautifulSoup(self.browser.page_source, 'html.parser')
+            if self.browser_closed_unexpected:
+                return
+            # First check if request is identified as robot:
+            logging.info('Search Page Source Acquired. Start Robot Check with BeautifulSoup...')
+            search_page_content = self.page_source
+            search_soup = BeautifulSoup(search_page_content, 'html.parser')
             search_soup_text = search_soup.text
             robot_signal = u'滑块'.encode('utf-8')
             forbidden_signal = 'Forbidden'
@@ -132,7 +129,7 @@ class InfoScraper(object):
                 write_file(output, self.dst_path)
                 logging.error(idx + source_name.encode('utf-8') +
                               ': Treated as robot. Page Source: \n' + ('#' * 150 + '\n') * 5 +
-                              self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
+                              search_page_content.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
                 self.service_denied = True
                 self.service_denied_count += 1
                 return
@@ -144,32 +141,27 @@ class InfoScraper(object):
                 write_file(output, self.dst_path)
                 logging.error(idx + source_name.encode('utf-8') +
                               ': 403 Forbidden. Page Source: \n' + ('#' * 150 + '\n') * 5 +
-                              self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
+                              search_page_content.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
                 self.service_denied = True
                 self.service_denied_count += 1
                 return
 
-            # Click the first result if there are result returned.
+            # Browse the first result in search page if there are any.
             if search_soup.find(class_='query_name') is not None:
-                logging.info(idx + source_name.encode('utf-8') +
-                             ': Found valid entry in search page. Ready to access the first result.')
-                # self.browser.find_element_by_class_name('query_name').click()
-                # Somehow the click action does not work for PhantomJS anymore.
-                # Workaround by access the page directly using href.
-                entry_link = 'http://www.tianyancha.com' + search_soup.find(class_='query_name').get('href')
-                logging.info('About to Access Entry link: ' + entry_link)
-
-                # self.browser.get(entry_link)
-                # Using non-blocking way to avoid API failure
-                # Run browser.get method on a separate thread, stop scraper if it timeout.
+                logging.info(idx + source_name.encode('utf-8') + ': Found valid entry in search page.')
+                entry_link = search_soup.find(class_='query_name').get('href')
+                logging.info('Try to access the Company Page link: ' + entry_link)
                 t_loadURL = Thread(target=self.load_url, args=(entry_link,), name='LoadURL_Thread')
                 t_loadURL.start()
                 t_loadURL.join(timeout=30)
-                # Terminate scraper and load_url.
                 if t_loadURL.isAlive():
+                    logging.info('Time out for browser. Throw TimeoutException.')
                     raise common.exceptions.TimeoutException
-                self.wait_refresh(self.wait)
-                page_soup = BeautifulSoup(self.browser.page_source, 'html.parser')
+                if self.browser_closed_unexpected:
+                    return
+                logging.info('Company Page Source acquired. Start Parsing with BeautifulSoup...')
+                info_page_content = self.page_source
+                page_soup = BeautifulSoup(info_page_content, 'html.parser')
                 # Handle the robot detection occurred after click.
                 if robot_signal in page_soup.text.encode('utf-8'):
                     output = idx + source_name.encode('utf-8') + u', 被识别为机器人! \n'.encode('utf-8')
@@ -178,7 +170,7 @@ class InfoScraper(object):
                     write_file(output, self.dst_path)
                     logging.error(idx + source_name.encode('utf-8') +
                                   ': Treated as robot. Page Source: \n' + ('#' * 150 + '\n') * 5 +
-                                  self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
+                                  info_page_content.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
                     self.service_denied = True
                     self.service_denied_count += 1
                     return
@@ -190,7 +182,7 @@ class InfoScraper(object):
                 if 'Null' in combined:
                     logging.error(idx + source_name.encode('utf-8') +
                                   ': Not all field extracted. Page Source: \n' + ('#' * 150 + '\n') * 5 +
-                                  self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
+                                  info_page_content.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
                 logging.info('Extraction completed!!!')
                 output = idx + source_name.encode('utf-8') + ',' + combined + '\n'
                 write_file(output, self.dst_path)
@@ -205,7 +197,7 @@ class InfoScraper(object):
                 logging.info(idx + source_name.encode('utf-8') + ': No valid entry in Search Page.\n')
                 # logging.error(idx + source_name.encode('utf-8') +
                 #               ': No valid entry in Search Page. Page Source: \n' + ('#' * 150 + '\n') * 5 +
-                #               self.browser.page_source.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
+                #               info_page_content.encode('utf-8') + '\n' + ('#' * 150 + '\n') * 5)
         # Throw by wait_refresh(), help quickly stop the scraper when user abort.
         except exceptions.RuntimeError:
             logging.info('User aborted during wait_refresh.')
@@ -221,7 +213,7 @@ class InfoScraper(object):
             print output
             write_file(output, self.dst_path)
             q.put(output)
-        # happened when selenium method timeout.
+        # happened when webdriver took too long to respond.
         except common.exceptions.TimeoutException:
             logging.error('Selenium page_load or script execution timeout.')
             output = idx + source_name.encode('utf-8') + ',' + 'Timeout loading webpage..\n'
@@ -233,7 +225,7 @@ class InfoScraper(object):
         except:
             logging.error(idx + source_name.encode('utf-8') +
                           ': Exception during webpage parsing.  \n' + traceback.format_exc() + '\n' +
-                          ('#' * 150 + '\n') * 5 + self.browser.page_source.encode('utf-8') +
+                          ('#' * 150 + '\n') * 5 + self.page_source.encode('utf-8') +
                           '\n' + ('#' * 150 + '\n') * 5)
             output = idx + source_name.encode('utf-8') + ',' + 'Exception.\n'
             print output
@@ -401,6 +393,9 @@ class InfoScraper(object):
         for i in range(len(self.url_list)):
             if not self.abort:
                 self.scraper(self.url_list[i], self.company_list[i], i)
+                if self.browser_closed_unexpected:
+                    self.abort = True
+                    break
                 # <Scenario 4>: Service Denied too many times, no point to continue, the scraper exit immediately.
                 if self.service_denied_count >= self.service_denied_limits:
                     logging.info('Stop scraper due to service denied.')
@@ -430,8 +425,7 @@ class InfoScraper(object):
         self.abort = True
         print '<Scraper_Thread> Stopping Scraper_Thread...'
         logging.info('<Scraper_Thread> Stopping Scraper_Thread...')
-        # self.browser.quit()
-        self.proc.terminate()
+        self.browser.quit()
         print '<Scraper_Thread> Scraper_Thread Terminated.'
         logging.info('<Scraper_Thread> Scraper_Thread Terminated.')
 
@@ -446,10 +440,9 @@ class UI(object):
         if len(self.source_path) > 0:
             # Instantiate InfoScraper Class.
             # If InfoScraper already exist, that is because user already load a file, and trying to reload another one
-            # We need to terminate the corresponding subprocess created for the scraper.
+            # We need to quit the current browser
             if self.myScraper is not None:
-                self.myScraper.proc.terminate()
-                # self.myScraper.browser.quit()
+                self.myScraper.browser.quit()
             self.result_path = 'result_' + str(time.strftime('%Y %m %d %H%M', time.localtime(time.time()))) + '.txt'
             self.myScraper = InfoScraper(self.source_path, self.result_path)
             self.myScraper.interval = 5
@@ -458,15 +451,14 @@ class UI(object):
             self.root.lift()
             self.root.attributes('-topmost', True)
             self.root.attributes('-topmost', False)
-            # Invalid file format, need to terminate the corresponding subprocess.
+            # Invalid file format, need to quit the current browser.
             if self.myScraper.format_error:
                 self.warning()
                 self.current_status.set('Status: Oops... Looks like your file is not encoded in UTF-8, '
                                         'please SAVE AS UTF-8 and retry.')
                 self.status.config(fg='red')
                 self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='disable')
-                self.myScraper.proc.terminate()
-                # self.myScraper.browser.quit()
+                self.myScraper.browser.quit()
             else:
                 self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='normal')
                 self.current_status.set('Status: Source file validated. Ready to Launch. Now let\'s go to <Step #2>!')
@@ -518,7 +510,11 @@ class UI(object):
             time.sleep(1)
         print '<Monitor_Thread> Exit monitor state, cleanup...'
         logging.info('<Monitor_Thread> Exit monitor state, cleanup...')
-        if self.myScraper.service_denied_count >= self.myScraper.service_denied_limits:
+        if self.myScraper.browser_closed_unexpected:
+            self.current_status.set('Status: Oh no... You closed my browser, didn\'t you!' +
+                                    ' (Scanned ' + str(self.myScraper.completed_item) + ' entries)')
+            self.status.config(fg='red', font=("微软雅黑", 10, 'bold'))
+        elif self.myScraper.service_denied_count >= self.myScraper.service_denied_limits:
             self.current_status.set('Status: Oops... Tianyancha has temporarily blocked me. ' +
                                     'Please retry if you can access Tianyancha normally.' +
                                     ' (Scanned ' + str(self.myScraper.completed_item) + ' entries in ' +
