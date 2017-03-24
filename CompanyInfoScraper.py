@@ -20,7 +20,7 @@ __author__ = "Michael Yuan"
 __copyright__ = "Copyright 2016"
 __credits__ = "Catrina Meng"
 __license__ = "GPL"
-__version__ = "v1.0.5"
+__version__ = "v1.0.6"
 
 
 # Generate UTF-8 encoded url link of the search path.
@@ -243,37 +243,37 @@ class InfoScraper(object):
             company_info = page_soup.find_all('div', class_="company_info_text")
             tag = u'公司名称:'
             if len(company_info) > 0:
-                temp = company_info[0].p.text
-                res = tag + temp[:temp.find('\n')]
+                temp = company_info[0].contents[0].text
+                res = tag + temp
                 result.append(res.encode('utf-8'))
             else:
-                result.append((tag + 'company_info Null').encode('utf-8'))
+                result.append((tag + u'未公开').encode('utf-8'))
         except:
             logging.error('Extract company_info failed\n' + traceback.format_exc())
 
         # PART 2: legal person name
         try:
             # Target - <td class="td-legalPersonName-value c9"> - <a>
-            legal_person_name = page_soup.find_all('td', class_="td-legalPersonName-value c9")
+            legal_person_name = page_soup.find_all('a', attrs={"ng-if": "company.legalPersonName", })
             tag = u'法人:'
             if len(legal_person_name) > 0:
-                if legal_person_name[0].a is not None:
-                    res = tag + legal_person_name[0].a.string
-                else:
-                    res = tag + u'未公开'
+                res = tag + legal_person_name[0].text
                 result.append(res.encode('utf-8'))
             else:
-                result.append((tag + 'legal_person_name Null').encode('utf-8'))
+                result.append((tag + u'未公开').encode('utf-8'))
         except:
             logging.error('Extract legal_person_name failed\n' + traceback.format_exc())
 
         # PART 3: reg capital
         try:
             # Target - <td class="td-regCapital-value"> - <p>
-            reg_capital = page_soup.find_all('td', class_="td-regCapital-value")
+            reg_capital = page_soup.find_all('div', class_="baseinfo-module-content-value ng-binding")
             tag = u'注册资本:'
             if len(reg_capital) > 0:
-                res = tag + reg_capital[0].p.string
+                temp = reg_capital[0].text
+                if temp == '-':
+                    temp = u'未公开'
+                res = tag + temp
                 result.append(res.replace(',', ' ').encode('utf-8'))
             else:
                 result.append((tag + 'reg_capital Null').encode('utf-8'))
@@ -283,10 +283,10 @@ class InfoScraper(object):
         # PART 4: reg time
         try:
             # Target - <td class="td-regTime-value"> - <p>
-            reg_time = page_soup.find_all('td', class_="td-regTime-value")
+            reg_time = page_soup.find_all('div', class_="baseinfo-module-content-value ng-binding")
             tag = u'注册时间:'
             if len(reg_time) > 0:
-                res = tag + reg_time[0].p.string
+                res = tag + reg_time[1].text
                 result.append(res.encode('utf-8'))
             else:
                 result.append((tag + 'reg_time Null').encode('utf-8'))
@@ -297,26 +297,14 @@ class InfoScraper(object):
         try:
             # Target - <div ng-if="company.staffList.length>0" class="ng-scope"> - <a> & <span>
             # Exclude - similar node that has "id"="nav-main-staff"
-            staff_node = page_soup.find_all('div', attrs={
-                                    "ng-if": "company.staffList.length>0",
-                                    "class": "ng-scope",
-                                    "id": ""})
-            if len(staff_node) > 0 and staff_node[0] is not None:
-                staff_name = staff_node[0].find_all('a')
-                staff_title = staff_node[0].find_all('span')
+            staff_node = page_soup.find_all('div', class_="staffinfo-module-content-title")
+            if len(staff_node) > 0:
                 name_res = [u'任职人员:'.encode('utf-8'),]
                 title_res = [u'职务:'.encode('utf-8'),]
-                if len(staff_name) > 0:
-                    for name in staff_name:
-                        name_res.append(name.string.encode('utf-8'))
-                else:
-                    name_res.append('staff_name Null')
+                for name in staff_node:
+                    name_res.append(name.text.encode('utf-8'))
                 result.append(name_res)
-                if len(staff_title) > 0:
-                    for title in staff_title:
-                        title_res.append(title.string.strip('\n').encode('utf-8'))
-                else:
-                    title_res.append('staff_title Null')
+                title_res.append(u'董事'.encode('utf-8'))
                 result.append(title_res)
             else:
                 result.append((u'任职人员:' + 'staff_list Null').encode('utf-8'))
@@ -327,18 +315,11 @@ class InfoScraper(object):
         try:
             # Target - <div ng-if="company.investorList.length>0" class="ng-scope"> - <a>
             # Exclude - similar node that has "id"="nav-main-investment"
-            investor_node = page_soup.find_all('div', attrs={
-                                                "ng-if": "company.investorList.length>0",
-                                                "class": "ng-scope",
-                                                "id": ""})
+            investor_node = page_soup.find_all('a', attrs={"event-name": "company-detail-investment"})
             if len(investor_node) > 0 and investor_node[0] is not None:
-                investor_name = investor_node[0].find_all('a')
                 investor_res = [u'股东:'.encode('utf-8'),]
-                if len(investor_name) > 0:
-                    for investor in investor_name:
-                        investor_res.append(investor.string.encode('utf-8'))
-                else:
-                    investor_res.append('investor_list Null')
+                for investor in investor_node:
+                    investor_res.append(investor.text.encode('utf-8'))
                 result.append(investor_res)
             else:
                 result.append((u'股东:' + 'investor_list Null').encode('utf-8'))
