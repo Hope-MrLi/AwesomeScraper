@@ -1,14 +1,30 @@
-Implemented the following feature:
+# Awesome Scraper
+> A handy tool for scraping Tianyancha. 
 
-1. Reading from a user specified txt file as input.
+![image](https://github.com/mtyylx/AwesomeScraper/blob/master/snapshot.png?raw=true)
 
-2. Generate the corresponding search link for Tianyancha.com
+## Dependency
 
-3. Browse each link on Tianyancha using Selenium and PhantomJS.
+1. PhantomJS / Chromedriver
 
-4. Parse the search page and decide if there are valid return result. Select the first result link and simulate a click action to open the company info page.
+2. Selenium
 
-5. Use BeautifulSoup to parse the html page and extract interested field for the page and store them.
+3. BeautifulSoup
+
+4. TKinter
+
+
+## Implementation Details
+
+1. Reading from a user specified txt file as input (UTF-8).
+
+2. Generate corresponding search link.
+
+3. Browse each link on Tianyancha using Selenium and PhantomJS/Chromedriver.
+
+4. Parse the search page and decide if there are valid return result. Open the first result link to enter company info page.
+
+5. Use BeautifulSoup to parse the html page and extract POIs and store them.
 
 6. Display the current parsed result on the GUI.
 
