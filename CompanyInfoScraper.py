@@ -2,6 +2,7 @@
 from selenium import webdriver
 from selenium import common
 from selenium.common.exceptions import *
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from bs4 import BeautifulSoup
 import time
 import urllib2
@@ -26,7 +27,7 @@ __version__ = "v1.0.6"
 # Generate UTF-8 encoded url link of the search path.
 def search_link_generator(entry_list):
     link_list = []
-    domain = 'http://www.tianyancha.com/search/'
+    domain = 'http://www.tianyancha.com/search?key='
     for entry in entry_list:
         info = entry.encode('utf-8')
         link = domain + urllib2.quote(info)
@@ -49,10 +50,15 @@ class InfoScraper(object):
         self.src_path = src_path
         self.dst_path = dst_path
 
-        js_path = os.getcwd() + '\\lib\\chromedriver.exe'
-        self.browser = webdriver.Chrome(executable_path=js_path)
-        self.browser.set_page_load_timeout(30)
-        logging.info('ChromeDriver launched successfully.')
+        js_path = os.getcwd() + '\\lib\\phantomjs.exe'
+        agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.3494.62 Safari/537.36"
+        capability = dict(DesiredCapabilities.PHANTOMJS)
+        capability["phantomjs.page.settings.userAgent"] = agent
+        self.browser = webdriver.PhantomJS(executable_path=js_path, desired_capabilities=capability)
+
+        self.load_timeout = 60
+        self.browser.set_page_load_timeout(self.load_timeout)
+        logging.info('PhantomJS launched successfully.')
         self.wait = 7
         self.timer_start = 0
         self.timer_stop = 0
@@ -64,7 +70,7 @@ class InfoScraper(object):
         self.service_denied = False  # Flag indicating the current search url is denied by server.
         self.service_denied_count = 0  # Flag indicating how many times it has been denied.
         self.service_denied_limits = 4
-        self.service_denied_timer = 1
+        self.service_denied_timer = 60
         self.completed_item = 0
         self.page_source = ''
         self.browser_closed_unexpected = False
@@ -101,7 +107,7 @@ class InfoScraper(object):
             logging.info('Search Started. Target: ' + idx + source_name.encode('utf-8') + '\n')
             t_loadURL = Thread(target=self.load_url, args=(search_link,), name='LoadURL_Thread')
             t_loadURL.start()
-            t_loadURL.join(timeout=30)
+            t_loadURL.join(timeout=self.load_timeout)
             # Terminate scraper and load_url.
             if t_loadURL.isAlive():
                 logging.info('Time out for browser. Throw TimeoutException.')
@@ -109,7 +115,7 @@ class InfoScraper(object):
             if self.browser_closed_unexpected:
                 return
             # First check if request is identified as robot:
-            logging.info('Search Page Source Acquired. Start Robot Check with BeautifulSoup...')
+            logging.info('Search Results Acquired. Start Robot Check with BeautifulSoup...')
             search_page_content = self.page_source
             search_soup = BeautifulSoup(search_page_content, 'html.parser')
             search_soup_text = search_soup.text
@@ -153,7 +159,7 @@ class InfoScraper(object):
                 logging.info('Try to access the Company Page link: ' + entry_link)
                 t_loadURL = Thread(target=self.load_url, args=(entry_link,), name='LoadURL_Thread')
                 t_loadURL.start()
-                t_loadURL.join(timeout=30)
+                t_loadURL.join(timeout=self.load_timeout)
                 if t_loadURL.isAlive():
                     logging.info('Time out for browser. Throw TimeoutException.')
                     raise common.exceptions.TimeoutException
@@ -221,7 +227,7 @@ class InfoScraper(object):
             write_file(output, self.dst_path)
             q.put(output)
             self.service_denied = True
-            self.service_denied_count += 10
+            self.service_denied_count += 1
         except:
             logging.error(idx + source_name.encode('utf-8') +
                           ': Exception during webpage parsing.  \n' + traceback.format_exc() + '\n' +
