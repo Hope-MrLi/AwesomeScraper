@@ -26,10 +26,20 @@
 
 5. Use BeautifulSoup to parse the html page and extract POIs and store them.
 
-6. Display the current parsed result on the GUI.
+6. Display the current parsed result on the GUI, and record search result in output files. (Producer-Consumer Model)
 
-7. When all entry in the user specified txt has been searched, return a file that save all the company info.
+7. Providing a one-click function for post-processing / duplicate removal, and return *.csv file for user to further analyze in Excel.
 
-8. Providing a one-click function for user to post-processing the result file generated, and return a .csv file for user to further analyze in Excel.
+8. User can abort and restart the scraper at any time. Three threads: 
+    - Main thread: GUI based on TKinter.
+    - Scraper thread: Perform search and extraction. 
+    - Monitor thread: Keep track of Scraper thread and display most recent search results to GUI.
+    
+## Code Freeze
 
-9. User can abort and restart the scraper at any time. There are mainly three threads running. Main thread is the GUI which is based on TKinter, and when user start the search, thread Scraper and thread Monitor will be created then destroyed.
+```
+python setup.py py2exe
+```
+
+## Have Fun!
+
