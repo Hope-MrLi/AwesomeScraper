@@ -16,12 +16,15 @@ import os
 import webbrowser
 import traceback
 import logging
+import subprocess
+from win32process import *
+
 
 __author__ = "Michael Yuan"
 __copyright__ = "Copyright 2016"
 __credits__ = "Catrina Meng"
 __license__ = "GPL"
-__version__ = "v1.0.6"
+__version__ = "v1.0.7"
 
 
 # Generate UTF-8 encoded url link of the search path.
@@ -49,31 +52,39 @@ class InfoScraper(object):
     def __init__(self, src_path, dst_path):
         self.src_path = src_path
         self.dst_path = dst_path
-
-        js_path = os.getcwd() + '\\lib\\phantomjs.exe'
-        agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.3494.62 Safari/537.36"
-        capability = dict(DesiredCapabilities.PHANTOMJS)
-        capability["phantomjs.page.settings.userAgent"] = agent
-        self.browser = webdriver.PhantomJS(executable_path=js_path, desired_capabilities=capability)
-
         self.load_timeout = 60
-        self.browser.set_page_load_timeout(self.load_timeout)
-        logging.info('PhantomJS launched successfully.')
-        self.wait = 7
-        self.timer_start = 0
-        self.timer_stop = 0
-        self.duration = ''
-        self.format_error = False  # Flag indicating format error of user specified file.
-        self.company_list = []  # List read from user specified txt file.
-        self.url_list = []  # URL List generated from company_list.
-        self.abort = False  # Flag for signaling the abort of scraper and monitor thread.
-        self.service_denied = False  # Flag indicating the current search url is denied by server.
-        self.service_denied_count = 0  # Flag indicating how many times it has been denied.
-        self.service_denied_limits = 4
-        self.service_denied_timer = 60
+        self.browser = None
+        self.js_subprocess = None
+        self.restart()
+
+        self.format_error = False           # Flag indicating format error of user specified file.
+        self.company_list = []              # List read from user specified txt file.
+        self.url_list = []                  # URL List generated from company_list.
+        self.abort = False                  # Flag for signaling the abort of scraper and monitor thread.
+        self.service_denied = False         # Flag indicating the current search url is denied by server.
+        self.service_denied_count = 0       # Flag indicating how many times it has been denied.
+        self.service_denied_limits = 4      # Maximum deny count.
+        self.service_denied_timer = 60      # If deny occurred, how long did the scraper wait.
+        self.wait = 7                       # Fixed waiting time for the page to load, since the page is unpredictable.
         self.completed_item = 0
         self.page_source = ''
         self.browser_closed_unexpected = False
+
+    def restart(self):
+        js_path = os.getcwd() + '\\lib\\phantomjs.exe --webdriver=4444 --load-images=no'
+        agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36"
+        capability = dict(DesiredCapabilities.PHANTOMJS)
+        capability["phantomjs.page.settings.userAgent"] = agent
+        self.js_subprocess = subprocess.Popen(
+            js_path,
+            stdout=subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW
+        )
+        time.sleep(2)
+        self.browser = webdriver.Remote(command_executor='http://127.0.0.1:4444/wd/hub',
+                                        desired_capabilities=capability)
+        self.browser.set_page_load_timeout(self.load_timeout)
+        logging.info('PhantomJS launched successfully.')
 
     # Waiting for web page to refresh, but keep monitor if user want to abort.
     def wait_refresh(self, interval):
@@ -82,11 +93,11 @@ class InfoScraper(object):
                 raise exceptions.RuntimeError
             time.sleep(0.5)
 
-    def load_url(self, search_link):
+    def get_url(self, url):
         try:
             self.browser_closed_unexpected = False
             print self.browser.window_handles
-            self.browser.get(search_link)
+            self.browser.get(url)
             self.wait_refresh(self.wait)
             self.page_source = self.browser.page_source
         except WebDriverException:
@@ -94,7 +105,7 @@ class InfoScraper(object):
             self.abort = True
             logging.error('Browser was accidentally closed. Abort Scraper.')
         except:
-            logging.error('Abort load_url method unexpectedly.')
+            logging.error('<get_url> method crashed: ' + traceback.format_exc())
 
     # self.browser sometimes will hung up, which cause the browser.get() and browser.page_source freeze the scraper.
     # Since the content tag does not include all require info, we need to parse each field.
@@ -105,12 +116,12 @@ class InfoScraper(object):
             idx = str(idx + 1) + ','
             self.service_denied = False
             logging.info('Search Started. Target: ' + idx + source_name.encode('utf-8') + '\n')
-            t_loadURL = Thread(target=self.load_url, args=(search_link,), name='LoadURL_Thread')
-            t_loadURL.start()
-            t_loadURL.join(timeout=self.load_timeout)
+            t_get_url = Thread(target=self.get_url, args=(search_link,), name='getURL_Thread')
+            t_get_url.start()
+            t_get_url.join(timeout=self.load_timeout)
             # Terminate scraper and load_url.
-            if t_loadURL.isAlive():
-                logging.info('Time out for browser. Throw TimeoutException.')
+            if t_get_url.isAlive():
+                logging.info('Timeout Waiting for browser to open the URL. Exit scraper.')
                 raise common.exceptions.TimeoutException
             if self.browser_closed_unexpected:
                 return
@@ -119,7 +130,7 @@ class InfoScraper(object):
             search_page_content = self.page_source
             search_soup = BeautifulSoup(search_page_content, 'html.parser')
             search_soup_text = search_soup.text
-            robot_signal = u'滑块'.encode('utf-8')
+            robot_signal = 'antirobot'
             forbidden_signal = 'Forbidden'
 
             if search_soup_text is None:
@@ -157,11 +168,11 @@ class InfoScraper(object):
                 logging.info(idx + source_name.encode('utf-8') + ': Found valid entry in search page.')
                 entry_link = search_soup.find(class_='query_name').get('href')
                 logging.info('Try to access the Company Page link: ' + entry_link)
-                t_loadURL = Thread(target=self.load_url, args=(entry_link,), name='LoadURL_Thread')
-                t_loadURL.start()
-                t_loadURL.join(timeout=self.load_timeout)
-                if t_loadURL.isAlive():
-                    logging.info('Time out for browser. Throw TimeoutException.')
+                t_get_url = Thread(target=self.get_url, args=(entry_link,), name='getURL_Thread')
+                t_get_url.start()
+                t_get_url.join(timeout=self.load_timeout)
+                if t_get_url.isAlive():
+                    logging.info('Timeout Waiting for browser to open the URL. Exit scraper.')
                     raise common.exceptions.TimeoutException
                 if self.browser_closed_unexpected:
                     return
@@ -373,19 +384,23 @@ class InfoScraper(object):
     # 3. Service denied and wait for 5 min, user abort during the waiting period.
     # 4. Service denied too many times, no point to continue, the scraper exit immediately.
     # This will guarantee 'terminate()' to be called in any of the scenarios.
-    def start_scraper(self):
+    def run_scraper(self):
         logging.info('Scraper officially started.')
-        self.timer_start = time.time()
 
         for i in range(len(self.url_list)):
             if not self.abort:
                 self.scraper(self.url_list[i], self.company_list[i], i)
-                if self.browser_closed_unexpected:
-                    self.abort = True
-                    break
-                # <Scenario 4>: Service Denied too many times, no point to continue, the scraper exit immediately.
+                # Restart PhantomJS every loop (to Enhance Stability)
+                try:
+                    self.browser.quit()
+                    self.js_subprocess.terminate()
+                except:
+                    print "Error terminate browser or subprocess."
+                    logging.info("Error terminate browser or subprocess.")
+                self.restart()
+                # <Scenario 4>: Service Denied too many times, terminate scraper.
                 if self.service_denied_count >= self.service_denied_limits:
-                    logging.info('Stop scraper due to service denied.')
+                    logging.info('Mission Abort! Blocked too many times!')
                     break
                 # <Scenario 3>: Service Denied, wait for 1 minute to recover / user help.
                 if self.service_denied:
@@ -394,13 +409,6 @@ class InfoScraper(object):
                         time.sleep(1)
                         if self.abort:
                             break
-
-        self.timer_stop = time.time()
-        diff = (self.timer_stop - self.timer_start) / 60
-        self.duration = '%.1f min. ' % diff
-        print 'Total Time = ' + self.duration
-        logging.info('Total Time = ' + self.duration)
-
         # <Scenario 1>: Scraper finished searching all items and exit normally.
         if not self.abort:
             self.terminate()
@@ -410,11 +418,16 @@ class InfoScraper(object):
     # i.e. the moment closing flag become True, the current iteration is completed, so browser can be destroyed safely.
     def terminate(self):
         self.abort = True
-        print '<Scraper_Thread> Stopping Scraper_Thread...'
-        logging.info('<Scraper_Thread> Stopping Scraper_Thread...')
-        self.browser.quit()
-        print '<Scraper_Thread> Scraper_Thread Terminated.'
-        logging.info('<Scraper_Thread> Scraper_Thread Terminated.')
+        print 'Stopping Scraper_Thread...'
+        logging.info('Stopping Scraper_Thread...')
+        try:
+            self.browser.quit()
+            self.js_subprocess.terminate()
+            print 'Scraper_Thread has stopped.'
+            logging.info('Scraper_Thread has stopped.')
+        except:
+            print "Error terminate browser or subprocess."
+            logging.info("Error terminate browser or subprocess.")
 
 
 class UI(object):
@@ -429,10 +442,9 @@ class UI(object):
             # If InfoScraper already exist, that is because user already load a file, and trying to reload another one
             # We need to quit the current browser
             if self.myScraper is not None:
-                self.myScraper.browser.quit()
+                self.myScraper.terminate()
             self.result_path = 'result_' + str(time.strftime('%Y %m %d %H%M', time.localtime(time.time()))) + '.txt'
             self.myScraper = InfoScraper(self.source_path, self.result_path)
-            self.myScraper.interval = 5
             self.myScraper.load_file()
             # Bring the GUI to the front.
             self.root.lift()
@@ -445,7 +457,7 @@ class UI(object):
                                         'please SAVE AS UTF-8 and retry.')
                 self.status.config(fg='red')
                 self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='disable')
-                self.myScraper.browser.quit()
+                self.myScraper.terminate()
             else:
                 self.file_menu.entryconfig("Step #2: Run Forest Run!!!", state='normal')
                 self.current_status.set('Status: Source file validated. Ready to Launch. Now let\'s go to <Step #2>!')
@@ -461,8 +473,8 @@ class UI(object):
         global q
         q = Queue.Queue()
         # Start the scraper in a new thread
-        t = Thread(target=self.myScraper.start_scraper, name='Scraper_Thread')
-        t.start()
+        t_scraper = Thread(target=self.myScraper.run_scraper, name='Scraper_Thread')
+        t_scraper.start()
         print '<Scraper_Thread> started.'
         logging.info('<Scraper_Thread> started.')
 
@@ -473,14 +485,15 @@ class UI(object):
         self.menu_bar.entryconfig('Abort', state='normal')
 
         # Start Monitor the Scraper, retrieve current status in real-time, and destroy Scraper after job done.
-        t_update = Thread(target=self.monitor, args=(t,), name='Monitor_Thread')
+        t_update = Thread(target=self.monitor, args=(t_scraper,), name='Monitor_Thread')
         t_update.start()
         print '<Monitor_Thread> started.'
         logging.info('<Monitor_Thread> started.')
 
     # A independent Thread that keeps monitoring the execution of scraper thread.
     # Terminate itself either if user abort scraper thread, or scraper thread is completed.
-    def monitor(self, t):
+    def monitor(self, t_scraper):
+        timer_start = time.time()
         while not self.myScraper.abort:
             try:
                 # Make it unblocking, so that this thread won't stuck here forever.
@@ -495,37 +508,45 @@ class UI(object):
             except Queue.Empty:
                 pass
             time.sleep(1)
-        print '<Monitor_Thread> Exit monitor state, cleanup...'
-        logging.info('<Monitor_Thread> Exit monitor state, cleanup...')
+        print 'About to exit Monitor_Thread...'
+        logging.info('About to exit Monitor_Thread...')
+
+        timer_stop = time.time()
+        diff = (timer_stop - timer_start) / 60
+        duration = '%.1f min. ' % diff
+        print 'Total Time = ' + duration
+        logging.info('Total Time = ' + duration)
+
         if self.myScraper.browser_closed_unexpected:
             self.current_status.set('Status: Oh no... You closed my browser, didn\'t you!' +
-                                    ' (Scanned ' + str(self.myScraper.completed_item) + ' entries)')
+                                    ' (Scanned ' + str(self.myScraper.completed_item) + ' entries in ' +
+                                    duration + ')')
             self.status.config(fg='red', font=("微软雅黑", 10, 'bold'))
         elif self.myScraper.service_denied_count >= self.myScraper.service_denied_limits:
             self.current_status.set('Status: Oops... Tianyancha has temporarily blocked me. ' +
                                     'Please retry if you can access Tianyancha normally.' +
                                     ' (Scanned ' + str(self.myScraper.completed_item) + ' entries in ' +
-                                    self.myScraper.duration + ')')
+                                    duration + ')')
             self.status.config(fg='red', font=("微软雅黑", 10, 'bold'))
         else:
             self.current_status.set('Status: Job Done! Please click <Result> button to find your TXT result.' +
                                     ' Go to <Step #3> if you want!' + ' (Scanned ' + str(self.myScraper.completed_item) +
-                                    ' entries in ' + self.myScraper.duration + ')')
+                                    ' entries in ' + duration + ')')
             self.status.config(fg='blue', font=("微软雅黑", 10, 'bold'))
-        for i in range(0, 3):
-            print 'Scraper thread Alive = ' + str(t.isAlive())
-            if t.isAlive():
+
+        # Monitor if the scraper thread has stopped.
+        for i in range(0, 10):
+            print 'Scraper thread Alive = ' + str(t_scraper.isAlive())
+            if t_scraper.isAlive():
                 time.sleep(1)
-        self.myScraper = None
-        print '<Monitor_Thread> Scraper Object Destroyed.'
-        logging.info('<Monitor_Thread> Scraper Object Destroyed.')
+
         self.menu_bar.entryconfig('Abort', state='disable')
         self.file_menu.entryconfig("Step #3: Post Processing", state='normal')
         self.file_menu.entryconfig("Step #1: Choose Source File", state='normal')
         # When search completed or service_denied too many times, bring the GUI to top to notify user.
         self.bring_to_top()
-        print '<Monitor_Thread> Monitor_Thread Terminated.'
-        logging.info('<Monitor_Thread> Monitor_Thread Terminated.')
+        print 'Monitor_Thread has stopped.'
+        logging.info('Monitor_Thread has stopped.')
 
     def display_formatter(self, res):
         # Inform delay if identified as robot or service denial.
